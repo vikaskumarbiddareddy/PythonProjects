@@ -10,6 +10,7 @@ Build a habit tracker with colorful dot grids, streaks and a calendar history, f
 |---|---|
 | `goggin.html` | The working prototype (one file: HTML, CSS and JavaScript) |
 | `PROGRESS.md` | This log |
+| `README.md` | Short overview of the project |
 
 ## Current features (v0.1)
 - Habit cards with icon, name, description and a dot grid of recent weeks
@@ -59,3 +60,4 @@ Build a habit tracker with colorful dot grids, streaks and a calendar history, f
 - Built v0.1 prototype with all features listed above.
 - Briefly hosted it as a claude.ai artifact, then switched to a local development file only: removed Claude account sync, data now saves on-device.
 - Created the `goggin-app` folder and this progress log.
+- Added the project to the `PythonProjects` GitHub repo in the `goggin-app` folder.
