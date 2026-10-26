@@ -1,0 +1,8 @@
+# Termux (Android) install: everything except garminconnect's optional native
+# dependency curl_cffi, which has no Android build. garminconnect is installed
+# separately with --no-deps and falls back to plain `requests` for logging in.
+fastapi>=0.115
+uvicorn>=0.30
+pydantic>=2
+requests>=2.31
+ua-generator>=2.0

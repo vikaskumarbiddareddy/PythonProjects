@@ -13,10 +13,16 @@ function localToday() {
 
 async function api(path, opts = {}) {
   const sep = path.includes("?") ? "&" : "?";
-  const res = await fetch(`${path}${sep}today=${localToday()}`, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  let res;
+  try {
+    res = await fetch(`${path}${sep}today=${localToday()}`, {
+      headers: { "Content-Type": "application/json" },
+      ...opts,
+    });
+  } catch {
+    throw new Error("App server isn't running. Tap the Marathon shortcut (or run `marathon` in Termux).");
+  }
+  if (res.status === 401) throw new Error("Signed out. Run `marathon` in Termux to sign back in.");
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Request failed");
   return data;
@@ -349,9 +355,30 @@ async function renderProgress() {
           <button class="btn primary">Add</button>
         </form>
       </details>
+    </div>
+
+    <div class="card">
+      <h3>Backup</h3>
+      <p class="muted small">Your training log lives only on this phone. Save a backup now and then
+        (e.g. to Google Drive). Backups never include your Garmin login.</p>
+      <div class="row" style="gap:8px">
+        <a class="btn primary" style="flex:1;text-align:center;text-decoration:none" href="/api/backup?today=${localToday()}" download>⬇ Save backup</a>
+        <label class="btn" style="flex:1;text-align:center">⬆ Restore<input type="file" id="restoreFile" accept="application/json,.json" hidden></label>
+      </div>
     </div>`;
 
   renderWeight();
+
+  $("#restoreFile", el).addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file || !confirm(`Replace ALL training data on this phone with "${file.name}"?`)) return;
+    try {
+      await api("/api/restore", { method: "POST", body: await file.text() });
+      toast("Backup restored");
+      refresh();
+    } catch (err) { toast(err.message === "Request failed" ? "That file isn't a valid backup" : err.message); }
+  });
 
   $("#fitForm", el).addEventListener("submit", async (e) => {
     e.preventDefault();

@@ -8,6 +8,7 @@ from app import paces, progress
 from app.plan import MAGIC_SPEED, PEGASUS, WEEKS, generate_plan
 
 START, RACE = date(2026, 10, 26), date(2027, 4, 25)
+JSON = {"content-type": "application/json"}  # the server requires it on every write
 
 
 # --- paces ------------------------------------------------------------------
@@ -275,12 +276,12 @@ def test_sync_endpoint(client, monkeypatch):
     monkeypatch.setattr(garmin, "login", lambda: object())
     monkeypatch.setattr(garmin, "fetch_runs", lambda api, s, e: {
         "2026-10-29": {"km": 6.3, "time_s": 2900, "ids": ["42"], "avg_hr": 147}})
-    r = client.post("/api/garmin/sync?today=2026-10-30").json()
+    r = client.post("/api/garmin/sync?today=2026-10-30", headers=JSON).json()
     assert r["updated"] == ["2026-10-29"]
     w = client.get("/api/week?today=2026-10-30").json()["workouts"][3]
     assert (w["status"], w["actual_km"], w["avg_hr"], w["garmin_activity_id"]) == ("done", 6.3, 147, "42")
-    assert client.post("/api/garmin/sync?today=2026-10-30").json()["skipped"]  # throttled
-    assert not client.post("/api/garmin/sync?today=2026-10-30&force=true").json()["skipped"]
+    assert client.post("/api/garmin/sync?today=2026-10-30", headers=JSON).json()["skipped"]  # throttled
+    assert not client.post("/api/garmin/sync?today=2026-10-30&force=true", headers=JSON).json()["skipped"]
 
 
 # --- weight -----------------------------------------------------------------
@@ -294,7 +295,7 @@ def test_weight_entries(client):
     assert [e["kg"] for e in d["entries"]] == [78.4, 77.6]
     assert d["change_kg"] == -0.8 and d["latest"]["date"] == "2026-11-02"
     assert client.post("/api/weight", json={"date": "2026-11-03", "kg": 5}).status_code == 422
-    client.delete(f"/api/weight/{d['entries'][0]['id']}")
+    client.delete(f"/api/weight/{d['entries'][0]['id']}", headers=JSON)
     assert len(client.get("/api/weight").json()["entries"]) == 1
 
 
@@ -314,3 +315,48 @@ def test_migration_adds_columns(tmp_path, monkeypatch):
     with db.connect() as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(workouts)")}
     assert {"garmin_activity_id", "avg_hr"} <= cols
+
+
+# --- security & backup ------------------------------------------------------
+
+def test_writes_must_be_json(client):
+    r = client.post("/api/weight", data={"date": "2026-11-01", "kg": "70"})  # what a cross-site form sends
+    assert r.status_code == 415
+    assert client.delete("/api/weight/1").status_code == 415
+
+
+def test_backup_round_trip(client):
+    t = "today=2026-10-29"
+    client.post(f"/api/workouts/2026-10-29/log?{t}", json={"status": "done", "actual_km": 6.1})
+    client.post("/api/weight", json={"date": "2026-10-29", "kg": 78.0})
+    r = client.get(f"/api/backup?{t}")
+    assert "marathon-backup-2026-10-29.json" in r.headers["content-disposition"]
+    backup = r.json()
+    assert set(backup["tables"]) == {"settings", "workouts", "fitness", "weights", "shoes"}
+    assert not any(w in str(backup).lower() for w in ("password", "token", "oauth"))
+
+    client.post(f"/api/workouts/2026-10-29/log?{t}", json={"status": "skipped"})
+    client.delete(f"/api/weight/{backup['tables']['weights'][0]['id']}", headers=JSON)
+    assert client.post("/api/restore", json=backup).json() == {"ok": True}
+    assert client.get(f"/api/week?{t}").json()["workouts"][3]["status"] == "done"
+    assert client.get("/api/weight").json()["latest"]["kg"] == 78.0
+
+    assert client.post("/api/restore", json={"app": "other"}).status_code == 400
+    assert client.get(f"/api/week?{t}").json()["workouts"][3]["status"] == "done"  # untouched
+
+
+def test_host_check(tmp_path, monkeypatch):
+    import importlib
+    from fastapi.testclient import TestClient
+    from app import db, main
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "h.db")
+    monkeypatch.setenv("ALLOWED_HOSTS", "127.0.0.1,localhost")
+    fresh = importlib.reload(main)
+    try:
+        with TestClient(fresh.app, base_url="http://127.0.0.1:8765") as c:
+            assert c.get("/api/weight").status_code == 200
+        with TestClient(fresh.app, base_url="http://evil.example") as c:
+            assert c.get("/api/weight").status_code == 400
+    finally:
+        monkeypatch.delenv("ALLOWED_HOSTS")
+        importlib.reload(main)

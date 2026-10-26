@@ -39,23 +39,68 @@ Plan structure: Base (1–8), Build (9–16), Marathon-specific (17–23), Taper
 4 runs a week: Tue quality, Thu easy/steady, Sat long, Sun recovery. Every 4th week is a cutback.
 Peak week ~62 km with a 32 km long run.
 
-## Run it locally
+## Install on your Android phone (Termux, no cloud)
+
+Everything runs on the phone: the server only listens on `127.0.0.1`, so nothing on your
+Wi-Fi or the internet can reach it.
+
+1. Install **Termux** from [F-Droid](https://f-droid.org/packages/com.termux/) (not the outdated Play Store build).
+   Optional, also from F-Droid: **Termux:Widget** (home-screen button) and **Termux:Boot** (start when the phone boots).
+2. In Termux:
+   ```bash
+   curl -fsSLo setup.sh https://raw.githubusercontent.com/vikaskumarbiddareddy/PythonProjects/ccr-31d55edf-0fwzpj/marathon_app/termux/setup.sh
+   bash setup.sh
+   ```
+3. Connect Garmin (type your password at the prompt; it is **not** saved, only Garmin's login tokens are):
+   ```bash
+   marathon garmin
+   ```
+4. Open the app: `marathon`. In Chrome tap **⋮ → Install app** (or *Add to Home screen*).
+
+| Command | What it does |
+|---|---|
+| `marathon` | start the server if needed and open the app |
+| `marathon stop` / `restart` / `status` | control the server |
+| `marathon garmin` | (re)connect Garmin |
+| `marathon update` | download the latest version (keeps your data) |
+| `marathon log` | show the server log |
+
+Settings and data live in `~/.marathon/` (private to Termux): `env` (random `APP_KEY`, allowed hosts),
+`data/marathon.db`, `garmin_tokens/`. Use **Progress → Save backup** now and then; backups contain
+training data only, never Garmin credentials.
+
+**If Garmin login fails on the phone** (Garmin sometimes blocks logins that don't look like a browser,
+and the browser-like `curl_cffi` package has no Android build): run
+`GARMIN_TOKENS=./garmin_tokens python -m app.garmin_login` on a computer and copy the `garmin_tokens`
+folder to `~/.marathon/garmin_tokens` on the phone.
+
+### Security model
+
+- Server bound to `127.0.0.1` only.
+- A random `APP_KEY` is required on every request (stored as an httpOnly, SameSite cookie), so other apps
+  on the phone can't use the API.
+- `ALLOWED_HOSTS=127.0.0.1,localhost` blocks DNS-rebinding from websites; writes must be
+  `application/json`, which other websites can't send without a CORS preflight that is never granted.
+- The Garmin password is never stored; tokens are written owner-only.
+
+## Run it locally (computer)
 
 ```bash
 cd marathon_app
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-uvicorn app.main:app --reload --host 0.0.0.0
+uvicorn app.main:app --reload
 pytest
 ```
 
-Open http://localhost:8000 (or your computer's IP from your phone on the same Wi-Fi).
+Open http://localhost:8000.
 
 ## Settings (environment variables)
 
 | Variable | Purpose |
 |---|---|
-| `APP_KEY` | **Set this when hosting.** Open `https://your-app/?key=<APP_KEY>` once on your phone; a cookie keeps you signed in. |
+| `APP_KEY` | Required on every request when set (the Termux setup generates one). Open `/?key=<APP_KEY>` once; a cookie keeps you signed in. |
+| `ALLOWED_HOSTS` | Comma-separated Host names to accept, e.g. `127.0.0.1,localhost`. |
 | `GARMIN_EMAIL`, `GARMIN_PASSWORD` | Enables Send to watch. Tokens are cached so the password is only used on first login. |
 | `MARATHON_DB` | SQLite file path (default `data/marathon.db`). |
 | `GARMIN_TOKENS` | Garmin token folder (default `data/garmin_tokens`). |

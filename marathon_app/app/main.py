@@ -5,6 +5,9 @@ the runner's phone, wherever the server is hosted.
 
 If APP_KEY is set, every request needs it: open /?key=<APP_KEY> once and a
 long-lived cookie keeps the phone signed in (works for home-screen apps too).
+
+ALLOWED_HOSTS (comma-separated, e.g. "127.0.0.1,localhost") rejects requests for any
+other Host header, which blocks DNS-rebinding attacks from websites in the browser.
 """
 
 import hmac
@@ -14,7 +17,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -36,6 +40,11 @@ app = FastAPI(title="Marathon Trainer", lifespan=lifespan)
 
 @app.middleware("http")
 async def require_key(request: Request, call_next):
+    # Writes must be JSON: browsers can't send that cross-site without a CORS preflight,
+    # which this server never grants, so other websites can't post to the API.
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and \
+            not request.headers.get("content-type", "").startswith("application/json"):
+        return PlainTextResponse("Expected application/json", status_code=415)
     if not APP_KEY:
         return await call_next(request)
     given = request.query_params.get("key")
@@ -47,6 +56,9 @@ async def require_key(request: Request, call_next):
     if hmac.compare_digest(request.cookies.get(KEY_COOKIE, ""), APP_KEY):
         return await call_next(request)
     return PlainTextResponse("Private app. Open the link with ?key=... once on this device.", status_code=401)
+
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=os.environ.get("ALLOWED_HOSTS", "*").split(","))
 
 
 # --- helpers ----------------------------------------------------------------
@@ -353,6 +365,26 @@ def add_weight(body: WeightIn):
 def delete_weight(entry_id: int):
     with db.connect() as conn:
         conn.execute("DELETE FROM weights WHERE id = ?", (entry_id,))
+    return {"ok": True}
+
+
+# --- backup -----------------------------------------------------------------
+
+@app.get("/api/backup")
+def backup(today: str | None = None):
+    with db.connect() as conn:
+        data = db.export_all(conn)
+    name = f"marathon-backup-{_today(today).isoformat()}.json"
+    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/restore")
+def restore(data: dict):
+    try:
+        with db.connect() as conn:
+            db.import_all(conn, data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"ok": True}
 
 

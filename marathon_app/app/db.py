@@ -125,3 +125,37 @@ def row_to_workout(row) -> dict:
     w = dict(row)
     w["steps"] = json.loads(w["steps"])
     return w
+
+
+# --- backup / restore -------------------------------------------------------
+
+BACKUP_VERSION = 1
+BACKUP_TABLES = ("settings", "workouts", "fitness", "weights", "shoes")  # no Garmin credentials or tokens
+
+
+def export_all(conn) -> dict:
+    return {
+        "app": "marathon-trainer",
+        "version": BACKUP_VERSION,
+        "tables": {t: [dict(r) for r in conn.execute(f"SELECT * FROM {t}")] for t in BACKUP_TABLES},
+    }
+
+
+def import_all(conn, data: dict) -> None:
+    """Replace all training data with a backup. Raises ValueError for anything that isn't one."""
+    if data.get("app") != "marathon-trainer" or data.get("version") != BACKUP_VERSION:
+        raise ValueError("Not a Marathon Trainer backup file")
+    tables = data.get("tables") or {}
+    if not tables.get("workouts"):
+        raise ValueError("Backup has no workouts")
+    try:
+        for t in BACKUP_TABLES:
+            columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({t})")}
+            conn.execute(f"DELETE FROM {t}")
+            for row in tables.get(t, []):
+                keys = [k for k in row if k in columns]  # tolerate columns added or removed since
+                conn.execute(f"INSERT INTO {t} ({', '.join(keys)}) VALUES ({', '.join('?' * len(keys))})",
+                             [row[k] for k in keys])
+    except Exception as e:
+        conn.rollback()
+        raise ValueError(f"Backup could not be restored: {e}") from e
