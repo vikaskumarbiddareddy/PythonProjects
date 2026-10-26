@@ -1,0 +1,12 @@
+{
+  "name": "Marathon Trainer",
+  "short_name": "Marathon",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f3f0",
+  "theme_color": "#1c5cab",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

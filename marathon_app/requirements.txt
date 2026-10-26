@@ -1,2 +1,4 @@
-garminconnect>=0.3.20
+fastapi>=0.115
+uvicorn>=0.30
 pydantic>=2
+garminconnect>=0.3.20

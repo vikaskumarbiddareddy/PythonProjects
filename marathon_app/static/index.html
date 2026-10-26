@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1c5cab">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Marathon">
+  <title>Marathon Trainer</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow" id="topWeek">Loading…</div>
+      <h1 id="topTitle">Marathon Trainer</h1>
+    </div>
+    <div class="streak-pill" id="streakPill" title="Current streak (days)">🔥 <span>0</span></div>
+  </header>
+
+  <main>
+    <section id="view-today" class="view active"></section>
+    <section id="view-week" class="view"></section>
+    <section id="view-streaks" class="view"></section>
+    <section id="view-progress" class="view"></section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-view="today" class="active"><span class="ico">●</span>Today</button>
+    <button data-view="week"><span class="ico">▤</span>Week</button>
+    <button data-view="streaks"><span class="ico">▦</span>Streaks</button>
+    <button data-view="progress"><span class="ico">↗</span>Progress</button>
+  </nav>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
