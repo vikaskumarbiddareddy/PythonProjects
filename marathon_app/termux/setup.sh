@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # One-time setup of Marathon Trainer on an Android phone with Termux.
 #
-#   curl -fsSLo setup.sh https://raw.githubusercontent.com/vikaskumarbiddareddy/PythonProjects/ccr-31d55edf-0fwzpj/marathon_app/termux/setup.sh
+#   curl -fsSLo setup.sh https://raw.githubusercontent.com/vikaskumarbiddareddy/PythonProjects/main/marathon_app/termux/setup.sh
 #   bash setup.sh
 #
 # Safe to run again: it updates the code and keeps your data and settings.
@@ -10,7 +10,7 @@ set -euo pipefail
 CONF="$HOME/.marathon"
 # Branch to install: BRANCH from the caller, else the one saved by a previous run.
 SAVED_BRANCH="$(grep -s '^BRANCH=' "$CONF/env" | cut -d= -f2 || true)"
-BRANCH="${BRANCH:-${SAVED_BRANCH:-ccr-31d55edf-0fwzpj}}"
+BRANCH="${BRANCH:-${SAVED_BRANCH:-main}}"
 REPO="https://github.com/vikaskumarbiddareddy/PythonProjects.git"
 SRC="$HOME/marathon-src"
 

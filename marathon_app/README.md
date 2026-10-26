@@ -48,7 +48,7 @@ Wi-Fi or the internet can reach it.
    Optional, also from F-Droid: **Termux:Widget** (home-screen button) and **Termux:Boot** (start when the phone boots).
 2. In Termux:
    ```bash
-   curl -fsSLo setup.sh https://raw.githubusercontent.com/vikaskumarbiddareddy/PythonProjects/ccr-31d55edf-0fwzpj/marathon_app/termux/setup.sh
+   curl -fsSLo setup.sh https://raw.githubusercontent.com/vikaskumarbiddareddy/PythonProjects/main/marathon_app/termux/setup.sh
    bash setup.sh
    ```
 3. Connect Garmin (type your password at the prompt; it is **not** saved, only Garmin's login tokens are):
@@ -72,8 +72,8 @@ Wi-Fi or the internet can reach it.
    Then close and reopen the app.
 3. `marathon status` shows the installed version.
 
-The phone follows one branch (initially `ccr-31d55edf-0fwzpj`). To follow another, e.g. after merging
-into `main`: `marathon update main`; it is remembered for later updates.
+The phone follows one branch, `main` by default. To follow another (e.g. to try a feature branch):
+`marathon update <branch>`; it is remembered for later updates. Switch back with `marathon update main`.
 Your training log, settings and Garmin tokens are never touched by an update; save a backup first anyway
 for big changes.
 

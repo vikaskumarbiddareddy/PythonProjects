@@ -8,7 +8,7 @@ PIDFILE="$CONF/server.pid"
 LOG="$CONF/server.log"
 
 set -a; . "$CONF/env"; set +a
-BRANCH="${BRANCH:-ccr-31d55edf-0fwzpj}"  # env files from older setups have no BRANCH line
+BRANCH="${BRANCH:-main}"  # env files from older setups have no BRANCH line
 
 running() {
   # Any HTTP status (401 without the key) means the server is up.
