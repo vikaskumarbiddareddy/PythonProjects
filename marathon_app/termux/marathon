@@ -1,0 +1,74 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Marathon Trainer control script for Termux. Installed by setup.sh.
+set -euo pipefail
+
+CONF="$HOME/.marathon"
+APP="$HOME/marathon-src/marathon_app"
+PIDFILE="$CONF/server.pid"
+LOG="$CONF/server.log"
+
+set -a; . "$CONF/env"; set +a
+BRANCH="${BRANCH:-main}"  # env files from older setups have no BRANCH line
+
+running() {
+  # Any HTTP status (401 without the key) means the server is up.
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/static/icon.svg" || true)" != "000" ]
+}
+
+start() {
+  if running; then return; fi
+  cd "$APP"
+  # 127.0.0.1 only: unreachable from Wi-Fi or the internet.
+  nohup python -m uvicorn app.main:app --host 127.0.0.1 --port "$PORT" >"$LOG" 2>&1 &
+  echo $! >"$PIDFILE"
+  for _ in $(seq 1 50); do
+    if running; then return; fi
+    sleep 0.2
+  done
+  echo "The app didn't start. Last lines of $LOG:" >&2
+  tail -n 20 "$LOG" >&2
+  exit 1
+}
+
+stop() {
+  local pattern="uvicorn app.main:app --host 127.0.0.1 --port $PORT"
+  [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true
+  pkill -f "$pattern" 2>/dev/null || true
+  # Wait for a clean shutdown so a following start doesn't see the old server.
+  for _ in $(seq 1 25); do
+    if ! running; then rm -f "$PIDFILE"; return; fi
+    sleep 0.2
+  done
+  pkill -9 -f "$pattern" 2>/dev/null || true
+  rm -f "$PIDFILE"
+}
+
+case "${1:-open}" in
+  open)
+    start
+    # The key sets a long-lived cookie and is removed from the address bar right away.
+    termux-open-url "http://127.0.0.1:$PORT/?key=$APP_KEY"
+    ;;
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  status)
+    if running; then echo "Running on http://127.0.0.1:$PORT"; else echo "Stopped"; fi
+    echo "Version: $(git -C "$APP" log -1 --format='%h %cd - %s' --date=short) ($BRANCH)"
+    ;;
+  garmin)
+    cd "$APP"
+    python -m app.garmin_login
+    ;;
+  update)
+    # Run a copy: setup.sh replaces itself while updating the code.
+    # Optional argument switches branch, e.g. `marathon update main`; it is remembered.
+    cp "$APP/termux/setup.sh" "$TMPDIR/marathon-setup.sh"
+    BRANCH="${2:-$BRANCH}" bash "$TMPDIR/marathon-setup.sh"
+    ;;
+  log) tail -n 50 "$LOG" ;;
+  *)
+    echo "Usage: marathon [open|start|stop|restart|status|garmin|update [branch]|log]" >&2
+    exit 2
+    ;;
+esac
