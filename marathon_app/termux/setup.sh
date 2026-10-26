@@ -38,7 +38,7 @@ if ! python -m pip install -r "$APP/requirements-termux.txt"; then
 fi
 python -m pip install --no-deps garminconnect
 # Optional: browser-like TLS for Garmin login. Only a prebuilt wheel, never a long compile.
-python -m pip install --only-binary=:all: curl_cffi 2>/dev/null \
+python -m pip install --only-binary=:all: curl_cffi >/dev/null 2>&1 \
   || echo "(curl_cffi not available on Android; Garmin login will use plain requests)"
 
 say "Writing private settings to $CONF"

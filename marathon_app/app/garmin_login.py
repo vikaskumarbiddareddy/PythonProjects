@@ -14,7 +14,19 @@ from garminconnect import Garmin
 
 from .garmin import TOKEN_DIR
 
+def _already_connected() -> str | None:
+    try:
+        api = Garmin()
+        api.login(TOKEN_DIR)
+        return api.get_full_name()
+    except Exception:
+        return None
+
+
 if __name__ == "__main__":
+    if os.path.isdir(TOKEN_DIR) and (name := _already_connected()):
+        print(f"Already connected to Garmin as {name}. Nothing to do.")
+        raise SystemExit
     email = os.environ.get("GARMIN_EMAIL") or input("Garmin email: ").strip()
     password = os.environ.get("GARMIN_PASSWORD") or getpass.getpass("Garmin password (not shown, not saved): ")
     api = Garmin(email, password, prompt_mfa=lambda: input("Garmin verification code: ").strip())
