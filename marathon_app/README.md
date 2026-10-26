@@ -65,6 +65,18 @@ Wi-Fi or the internet can reach it.
 | `marathon update` | download the latest version (keeps your data) |
 | `marathon log` | show the server log |
 
+### Updating
+
+1. Changes are committed and pushed to GitHub.
+2. On the phone: `marathon update` (downloads the code, installs any new packages, restarts the server).
+   Then close and reopen the app.
+3. `marathon status` shows the installed version.
+
+The phone follows one branch (initially `ccr-31d55edf-0fwzpj`). To follow another, e.g. after merging
+into `main`: `marathon update main`; it is remembered for later updates.
+Your training log, settings and Garmin tokens are never touched by an update; save a backup first anyway
+for big changes.
+
 Settings and data live in `~/.marathon/` (private to Termux): `env` (random `APP_KEY`, allowed hosts),
 `data/marathon.db`, `garmin_tokens/`. Use **Progress → Save backup** now and then; backups contain
 training data only, never Garmin credentials.

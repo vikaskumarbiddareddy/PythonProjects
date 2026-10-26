@@ -53,6 +53,7 @@ case "${1:-open}" in
   restart) stop; start ;;
   status)
     if running; then echo "Running on http://127.0.0.1:$PORT"; else echo "Stopped"; fi
+    echo "Version: $(git -C "$APP" log -1 --format='%h %cd - %s' --date=short) ($BRANCH)"
     ;;
   garmin)
     cd "$APP"
@@ -60,12 +61,13 @@ case "${1:-open}" in
     ;;
   update)
     # Run a copy: setup.sh replaces itself while updating the code.
+    # Optional argument switches branch, e.g. `marathon update main`; it is remembered.
     cp "$APP/termux/setup.sh" "$TMPDIR/marathon-setup.sh"
-    bash "$TMPDIR/marathon-setup.sh"
+    BRANCH="${2:-$BRANCH}" bash "$TMPDIR/marathon-setup.sh"
     ;;
   log) tail -n 50 "$LOG" ;;
   *)
-    echo "Usage: marathon [open|start|stop|restart|status|garmin|update|log]" >&2
+    echo "Usage: marathon [open|start|stop|restart|status|garmin|update [branch]|log]" >&2
     exit 2
     ;;
 esac

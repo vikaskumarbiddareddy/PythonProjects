@@ -7,10 +7,12 @@
 # Safe to run again: it updates the code and keeps your data and settings.
 set -euo pipefail
 
-BRANCH="${BRANCH:-ccr-31d55edf-0fwzpj}"
+CONF="$HOME/.marathon"
+# Branch to install: BRANCH from the caller, else the one saved by a previous run.
+SAVED_BRANCH="$(grep -s '^BRANCH=' "$CONF/env" | cut -d= -f2 || true)"
+BRANCH="${BRANCH:-${SAVED_BRANCH:-ccr-31d55edf-0fwzpj}}"
 REPO="https://github.com/vikaskumarbiddareddy/PythonProjects.git"
 SRC="$HOME/marathon-src"
-CONF="$HOME/.marathon"
 
 say() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
@@ -52,6 +54,11 @@ GARMIN_TOKENS=$CONF/garmin_tokens
 PORT=8765
 EOF
 fi
+if grep -q '^BRANCH=' "$CONF/env"; then
+  sed -i "s|^BRANCH=.*|BRANCH=$BRANCH|" "$CONF/env"
+else
+  echo "BRANCH=$BRANCH" >> "$CONF/env"
+fi
 chmod 600 "$CONF/env"
 
 say "Installing the 'marathon' command and shortcuts"
@@ -70,7 +77,7 @@ All set!
   marathon          start the app and open it in Chrome
   marathon garmin   connect your Garmin account (password is not saved)
   marathon stop     stop the app
-  marathon update   get the latest version
+  marathon update   get the latest version (keeps your data)
   marathon status   is it running?
 
 Next steps:
