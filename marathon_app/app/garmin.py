@@ -107,3 +107,50 @@ def push(api: Garmin, w: dict, vdot: float) -> str:
     workout_id = str(created["workoutId"])
     api.schedule_workout(workout_id, w["date"])
     return workout_id
+
+
+# --- Garmin -> app: completed runs ------------------------------------------
+
+PARTIAL_BELOW = 0.8  # a run under 80% of the planned distance counts as partial
+
+
+def fetch_runs(api: Garmin, start: str, end: str) -> dict[str, dict]:
+    """Running activities between two dates, merged per local calendar day."""
+    days: dict[str, dict] = {}
+    for a in api.get_activities_by_date(start, end):
+        if "running" not in (a.get("activityType") or {}).get("typeKey", ""):
+            continue
+        day = a["startTimeLocal"][:10]
+        d = days.setdefault(day, {"km": 0.0, "time_s": 0, "ids": [], "hr_weighted": 0.0})
+        secs = a.get("duration") or 0
+        d["km"] += (a.get("distance") or 0) / 1000
+        d["time_s"] += secs
+        d["ids"].append(str(a["activityId"]))
+        d["hr_weighted"] += (a.get("averageHR") or 0) * secs
+    for d in days.values():
+        d["avg_hr"] = round(d.pop("hr_weighted") / d["time_s"]) if d["time_s"] else None
+        d["km"] = round(d["km"], 2)
+    return days
+
+
+def match_runs(workouts: list[dict], runs: dict[str, dict]) -> tuple[list[dict], list[str]]:
+    """Decide which planned workouts the Garmin runs complete.
+
+    Returns (updates, unplanned_days). Workouts the runner logged by hand are left alone;
+    ones filled by an earlier sync are refreshed.
+    """
+    updates, unplanned = [], []
+    by_date = {w["date"]: w for w in workouts}
+    for day, run in sorted(runs.items()):
+        w = by_date.get(day)
+        if not w or w["kind"] == "rest":
+            unplanned.append(day)
+            continue
+        if w["status"] in ("done", "partial") and not w.get("garmin_activity_id"):
+            continue
+        full = w["kind"] in ("test", "race") or run["km"] >= PARTIAL_BELOW * w["planned_km"]
+        updates.append({
+            "date": day, "status": "done" if full else "partial", "actual_km": run["km"],
+            "actual_time_s": run["time_s"], "avg_hr": run["avg_hr"], "garmin_activity_id": ",".join(run["ids"]),
+        })
+    return updates, unplanned

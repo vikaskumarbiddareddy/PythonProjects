@@ -205,3 +205,12 @@ form.inline { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 8px; ali
   opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none; z-index: 20;
 }
 .toast.show { opacity: 1; transform: none; }
+.actual { margin-top: 10px; font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.actual span { white-space: nowrap; }
+.wchart { width: 100%; height: auto; margin-top: 10px; display: block; touch-action: manipulation; }
+.wchart text { font-size: 10px; fill: var(--text-3); font-variant-numeric: tabular-nums; }
+.wchart .grid { stroke: var(--border); stroke-width: 1; }
+.wchart .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.wchart .pt { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.wchart .pt.sel { r: 6; }
+.wchart .hit { fill: transparent; cursor: pointer; }

@@ -62,6 +62,14 @@ def test_four_runs_per_week_long_run_saturday(plan):
             assert items[5].kind == "long"
 
 
+def test_first_run_turns_earlier_runs_into_rest():
+    plan = generate_plan(START, RACE, first_run=date(2026, 10, 29))
+    week1 = [w for w in plan if w.week == 1]
+    assert [w.kind for w in week1] == ["rest", "rest", "rest", "easy", "rest", "long", "recovery"]
+    assert week1[1].steps == [] and week1[1].shoe is None
+    assert sum(w.kind != "rest" for w in plan if w.week == 2) == 4
+
+
 def test_weekly_volume_close_to_target(plan):
     totals = defaultdict(float)
     for w in plan:
@@ -177,18 +185,19 @@ def client(tmp_path, monkeypatch):
 
 
 def test_api_flow(client):
-    t = "today=2026-10-27"
+    assert client.get("/api/dashboard?today=2026-10-27").json()["workout"]["kind"] == "rest"  # starts Thursday
+    t = "today=2026-10-29"
     d = client.get(f"/api/dashboard?{t}").json()
-    assert d["week"] == 1 and d["workout"]["title"] == "Easy + strides"
+    assert d["week"] == 1 and d["workout"]["title"] == "Easy 6 km + strides"
     assert d["workout"]["steps"][0]["pace"].endswith("/km")
 
-    r = client.post(f"/api/workouts/2026-10-27/log?{t}", json={"status": "done", "actual_km": 6.4})
+    r = client.post(f"/api/workouts/2026-10-29/log?{t}", json={"status": "done", "actual_km": 6.4})
     assert r.status_code == 200
     s = client.get(f"/api/heatmap?{t}").json()["streaks"]
-    assert s["current_days"] == 2 and s["runs_done"] == 1
+    assert s["current_days"] == 4 and s["runs_done"] == 1
 
     assert client.get(f"/api/week?{t}").json()["done_km"] == 6.4
-    assert client.post(f"/api/workouts/2026-10-26/log?{t}", json={"status": "done"}).status_code == 400
+    assert client.post(f"/api/workouts/2026-10-27/log?{t}", json={"status": "done"}).status_code == 400
 
 
 def test_test_result_updates_paces(client):
@@ -209,7 +218,7 @@ def test_garmin_not_configured(client, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     from app import garmin
     monkeypatch.setattr(garmin, "TOKEN_DIR", "/nonexistent")
-    r = client.post("/api/garmin/push?today=2026-10-27", json={"date": "2026-10-27"})
+    r = client.post("/api/garmin/push?today=2026-10-29", json={"date": "2026-10-29"})
     assert r.status_code == 400 and "not set up" in r.json()["detail"]
 
 
@@ -222,3 +231,86 @@ def test_app_key_required(client, monkeypatch):
     assert r.status_code == 307 and "marathon_key" in r.headers["set-cookie"]
     client.cookies.set("marathon_key", "s3cret")
     assert client.get("/api/dashboard?today=2026-10-27").status_code == 200
+
+
+# --- Garmin -> app sync -----------------------------------------------------
+
+def test_fetch_runs_merges_days_and_filters_type():
+    from app.garmin import fetch_runs
+
+    class FakeApi:
+        def get_activities_by_date(self, start, end):
+            return [
+                {"activityId": 1, "startTimeLocal": "2026-10-29 07:00:00", "distance": 4000, "duration": 1800,
+                 "averageHR": 140, "activityType": {"typeKey": "running"}},
+                {"activityId": 2, "startTimeLocal": "2026-10-29 18:00:00", "distance": 2000, "duration": 900,
+                 "averageHR": 155, "activityType": {"typeKey": "treadmill_running"}},
+                {"activityId": 3, "startTimeLocal": "2026-10-30 07:00:00", "distance": 20000, "duration": 3600,
+                 "activityType": {"typeKey": "cycling"}},
+            ]
+
+    runs = fetch_runs(FakeApi(), "2026-10-26", "2026-10-31")
+    assert list(runs) == ["2026-10-29"]
+    assert runs["2026-10-29"] == {"km": 6.0, "time_s": 2700, "ids": ["1", "2"], "avg_hr": 145}
+
+
+def test_match_runs_rules():
+    from app.garmin import match_runs
+
+    def w(day, kind="easy", status="planned", planned=6.0, gid=None):
+        return {"date": day, "kind": kind, "status": status, "planned_km": planned, "garmin_activity_id": gid}
+
+    run = lambda km: {"km": km, "time_s": 2400, "ids": ["9"], "avg_hr": 150}
+    workouts = [w("d1"), w("d2"), w("d3", kind="rest"), w("d4", status="done"), w("d5", status="done", gid="8"),
+                w("d6", status="skipped"), w("d7", kind="test", planned=9)]
+    runs = {"d1": run(6.1), "d2": run(4.0), "d3": run(5), "d4": run(6), "d5": run(6.2), "d6": run(6), "d7": run(3)}
+    updates, unplanned = match_runs(workouts, runs)
+    result = {u["date"]: u["status"] for u in updates}
+    assert result == {"d1": "done", "d2": "partial", "d5": "done", "d6": "done", "d7": "done"}
+    assert unplanned == ["d3"]  # run on a rest day; d4 was logged by hand and is left alone
+
+
+def test_sync_endpoint(client, monkeypatch):
+    from app import garmin
+    monkeypatch.setattr(garmin, "login", lambda: object())
+    monkeypatch.setattr(garmin, "fetch_runs", lambda api, s, e: {
+        "2026-10-29": {"km": 6.3, "time_s": 2900, "ids": ["42"], "avg_hr": 147}})
+    r = client.post("/api/garmin/sync?today=2026-10-30").json()
+    assert r["updated"] == ["2026-10-29"]
+    w = client.get("/api/week?today=2026-10-30").json()["workouts"][3]
+    assert (w["status"], w["actual_km"], w["avg_hr"], w["garmin_activity_id"]) == ("done", 6.3, 147, "42")
+    assert client.post("/api/garmin/sync?today=2026-10-30").json()["skipped"]  # throttled
+    assert not client.post("/api/garmin/sync?today=2026-10-30&force=true").json()["skipped"]
+
+
+# --- weight -----------------------------------------------------------------
+
+def test_weight_entries(client):
+    assert client.get("/api/weight").json() == {"entries": [], "latest": None, "change_kg": None}
+    client.post("/api/weight", json={"date": "2026-10-26", "kg": 78.4})
+    client.post("/api/weight", json={"date": "2026-11-02", "kg": 77.9})
+    client.post("/api/weight", json={"date": "2026-11-02", "kg": 77.6})  # same day replaces
+    d = client.get("/api/weight").json()
+    assert [e["kg"] for e in d["entries"]] == [78.4, 77.6]
+    assert d["change_kg"] == -0.8 and d["latest"]["date"] == "2026-11-02"
+    assert client.post("/api/weight", json={"date": "2026-11-03", "kg": 5}).status_code == 422
+    client.delete(f"/api/weight/{d['entries'][0]['id']}")
+    assert len(client.get("/api/weight").json()["entries"]) == 1
+
+
+def test_migration_adds_columns(tmp_path, monkeypatch):
+    import sqlite3
+    from app import db
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE workouts (id INTEGER PRIMARY KEY, date TEXT UNIQUE NOT NULL, week INTEGER NOT NULL, "
+                "phase TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, steps TEXT NOT NULL, shoe TEXT, "
+                "planned_km REAL NOT NULL, notes TEXT NOT NULL DEFAULT '', test_distance_km REAL, "
+                "status TEXT NOT NULL DEFAULT 'planned', actual_km REAL, actual_time_s INTEGER, rpe INTEGER, "
+                "comment TEXT, garmin_workout_id TEXT)")
+    old.commit(); old.close()
+    monkeypatch.setattr(db, "DB_PATH", path)
+    db.init_db()
+    with db.connect() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(workouts)")}
+    assert {"garmin_activity_id", "avg_hr"} <= cols

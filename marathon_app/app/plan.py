@@ -196,8 +196,11 @@ def _shoe_for(kind: str, steps) -> str:
     return MAGIC_SPEED if fast_km(steps) >= 4 else PEGASUS
 
 
-def generate_plan(start: date, race_day: date) -> list[Workout]:
-    """start must be a Monday; race_day is the Sunday of week 26."""
+def generate_plan(start: date, race_day: date, first_run: date | None = None) -> list[Workout]:
+    """start must be a Monday; race_day is the Sunday of week 26.
+
+    Runs scheduled before first_run become rest days (an easier entry into week 1).
+    """
     if start.weekday() != 0:
         raise ValueError("Plan must start on a Monday")
     if race_day != start + timedelta(weeks=PLAN_WEEKS - 1, days=6):
@@ -216,6 +219,8 @@ def generate_plan(start: date, race_day: date) -> list[Workout]:
             tue_km, thu_km, sun_km = 8, 6, 0
 
         def add(offset, kind, title, steps=(), notes="", test_km=None):
+            if first_run and day(offset) < first_run and kind != "rest":
+                kind, title, steps, notes, test_km = "rest", "Rest day", (), f"Training starts {first_run:%A}.", None
             steps = list(steps)
             shoe = _shoe_for(kind, steps) if kind != "rest" else None
             workouts.append(Workout(day(offset), week, phase, kind, title, steps, shoe, notes, test_km))

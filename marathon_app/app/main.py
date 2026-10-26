@@ -10,7 +10,7 @@ long-lived cookie keeps the phone signed in (works for home-screen apps too).
 import hmac
 import os
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -276,6 +276,84 @@ def garmin_push(body: PushIn, today: str | None = None):
         except Exception as e:
             raise HTTPException(502, f"Garmin Connect error: {e}")
     return {"pushed": pushed}
+
+
+SYNC_EVERY_S = 10 * 60
+
+
+@app.post("/api/garmin/sync")
+def garmin_sync(today: str | None = None, force: bool = False):
+    """Pull finished runs from Garmin and mark the matching workouts done."""
+    t = _today(today)
+    now = datetime.now(timezone.utc)
+    with db.connect() as conn:
+        last = db.get_setting(conn, "last_garmin_sync")
+        if not force and last and (now - datetime.fromisoformat(last)).total_seconds() < SYNC_EVERY_S:
+            return {"skipped": True, "updated": [], "unplanned": []}
+        start = db.get_setting(conn, "plan_start")
+        try:
+            runs = garmin.fetch_runs(garmin.login(), start, t.isoformat())
+        except garmin.GarminError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(502, f"Garmin Connect error: {e}")
+        updates, unplanned = garmin.match_runs(_all(conn), runs)
+        for u in updates:
+            conn.execute(
+                """UPDATE workouts SET status = :status, actual_km = :actual_km, actual_time_s = :actual_time_s,
+                   avg_hr = :avg_hr, garmin_activity_id = :garmin_activity_id WHERE date = :date""", u)
+        db.set_setting(conn, "last_garmin_sync", now.isoformat())
+    return {"skipped": False, "updated": [u["date"] for u in updates], "unplanned": unplanned}
+
+
+# --- weight -----------------------------------------------------------------
+
+class WeightIn(BaseModel):
+    date: str
+    kg: float = Field(gt=20, lt=300)
+    note: str | None = None
+    to_garmin: bool = False
+
+
+@app.get("/api/weight")
+def weights():
+    with db.connect() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM weights ORDER BY date")]
+    return {
+        "entries": rows,
+        "latest": rows[-1] if rows else None,
+        "change_kg": round(rows[-1]["kg"] - rows[0]["kg"], 1) if len(rows) > 1 else None,
+    }
+
+
+@app.post("/api/weight")
+def add_weight(body: WeightIn):
+    try:
+        date.fromisoformat(body.date)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    with db.connect() as conn:
+        # One weigh-in per day: a second entry on the same day replaces the first.
+        conn.execute(
+            """INSERT INTO weights (date, kg, note) VALUES (?, ?, ?)
+               ON CONFLICT(date) DO UPDATE SET kg = excluded.kg, note = excluded.note""",
+            (body.date, round(body.kg, 1), body.note),
+        )
+    garmin_saved = None
+    if body.to_garmin and garmin.configured():
+        try:
+            garmin.login().add_weigh_in(round(body.kg, 1), unitKey="kg", timestamp=f"{body.date}T08:00:00")
+            garmin_saved = True
+        except Exception:
+            garmin_saved = False  # saved locally either way
+    return {"ok": True, "garmin_saved": garmin_saved}
+
+
+@app.delete("/api/weight/{entry_id}")
+def delete_weight(entry_id: int):
+    with db.connect() as conn:
+        conn.execute("DELETE FROM weights WHERE id = ?", (entry_id,))
+    return {"ok": True}
 
 
 # --- static web app ---------------------------------------------------------

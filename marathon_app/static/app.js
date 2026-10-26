@@ -69,6 +69,21 @@ function statusChip(w) {
   return map[s] ? `<span class="chip ${map[s][1]}">${map[s][0]}</span>` : "";
 }
 
+function fmtDuration(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(sec).padStart(2, "0")}`;
+}
+
+function actualLine(w) {
+  if (w.actual_km == null && !w.actual_time_s) return "";
+  const parts = [];
+  if (w.actual_km != null) parts.push(`${w.actual_km} km`);
+  if (w.actual_time_s) parts.push(fmtDuration(w.actual_time_s));
+  if (w.actual_km && w.actual_time_s) parts.push(`${fmtDuration(Math.round(w.actual_time_s / w.actual_km))} /km`);
+  if (w.avg_hr) parts.push(`♥ ${w.avg_hr}`);
+  return `<div class="actual"><b>${w.garmin_activity_id ? "⌚ From Garmin" : "Logged"}:</b> ${parts.map((p) => `<span>${p}</span>`).join(" · ")}</div>`;
+}
+
 function workoutCard(w, { hero = false, garmin = false } = {}) {
   if (w.kind === "rest") {
     return `<div class="card"><h2>Rest day</h2><p class="muted">${esc(w.notes || "Recover well.")}</p></div>`;
@@ -86,6 +101,7 @@ function workoutCard(w, { hero = false, garmin = false } = {}) {
       ${shoeChip(w.shoe)}
     </div>
     ${w.notes ? `<p class="muted small">${esc(w.notes)}</p>` : ""}
+    ${actualLine(w)}
     ${renderSteps(w.steps)}
     <div class="btn-row">
       <button class="btn ${w.status === "done" ? "selected primary" : ""}" data-act="done">✓ Done</button>
@@ -207,7 +223,9 @@ async function renderWeek() {
         ${open && w.kind !== "rest" ? `<div class="day-detail">${workoutCard(w, { garmin: dash.garmin_configured })}</div>` : ""}`;
       }).join("")}
     </div>
-    ${dash.garmin_configured ? `<button class="btn primary block" id="pushWeek">⌚ Send this week to watch</button>` : ""}`;
+    ${dash.garmin_configured ? `
+      <button class="btn primary block" id="pushWeek">⌚ Send this week to watch</button>
+      <button class="btn block" id="syncGarmin">↻ Get finished runs from Garmin</button>` : ""}`;
 
   el.querySelectorAll("[data-nav]").forEach((b) => b.addEventListener("click", () => {
     state.weekShown += Number(b.dataset.nav);
@@ -227,6 +245,13 @@ async function renderWeek() {
       toast(`Sent ${r.pushed.length} workouts — sync your watch`);
     } catch (e) { toast(e.message); }
     renderWeek();
+  });
+  const sg = $("#syncGarmin", el);
+  if (sg) sg.addEventListener("click", async () => {
+    sg.disabled = true;
+    sg.textContent = "Syncing…";
+    try { await garminSync(true); } catch (e) { toast(e.message); }
+    refresh();
   });
   bindWorkoutCard(el, refresh);
 }
@@ -292,6 +317,8 @@ async function renderProgress() {
       </p>
     </div>
 
+    <div class="card" id="weightCard"></div>
+
     <div class="card">
       <h3>Your training paces</h3>
       <table style="margin-top:8px"><thead><tr><th>Zone</th><th>Pace /km</th></tr></thead><tbody>
@@ -324,6 +351,8 @@ async function renderProgress() {
       </details>
     </div>`;
 
+  renderWeight();
+
   $("#fitForm", el).addEventListener("submit", async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -332,6 +361,82 @@ async function renderProgress() {
         date: localToday(), distance_km: Number(f.get("distance_km")), time: f.get("time") }) });
       toast("Result added — paces updated");
       renderProgress();
+    } catch (err) { toast(err.message); }
+  });
+}
+
+/* ---------- Weight ---------- */
+
+function weightChart(entries) {
+  if (entries.length < 2) return `<p class="muted small">Add a couple of weigh-ins to see your trend.</p>`;
+  const W = 340, H = 140, padL = 34, padR = 8, padT = 10, padB = 22;
+  const t = entries.map((e) => new Date(e.date + "T12:00:00").getTime());
+  const kg = entries.map((e) => e.kg);
+  let lo = Math.min(...kg), hi = Math.max(...kg);
+  const pad = Math.max(0.5, (hi - lo) * 0.15);
+  lo = Math.floor((lo - pad) * 2) / 2; hi = Math.ceil((hi + pad) * 2) / 2;
+  const t0 = t[0], t1 = t[t.length - 1];
+  const x = (v) => padL + ((v - t0) / (t1 - t0)) * (W - padL - padR);
+  const y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const pts = entries.map((e, i) => [x(t[i]), y(e.kg)]);
+  const path = pts.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join("");
+  const mid = (lo + hi) / 2;
+  const short = (iso) => fmtDate(iso, { day: "numeric", month: "short" });
+  return `
+    <svg class="wchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weight trend from ${short(entries[0].date)} to ${short(entries.at(-1).date)}">
+      ${[hi, mid, lo].map((v) => `<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}" class="grid"/>
+        <text x="${padL - 6}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`).join("")}
+      <text x="${padL}" y="${H - 4}">${short(entries[0].date)}</text>
+      <text x="${W - padR}" y="${H - 4}" text-anchor="end">${short(entries.at(-1).date)}</text>
+      <path d="${path}" class="line"/>
+      ${pts.map(([px, py], i) => `<circle cx="${px}" cy="${py}" r="${entries.length > 30 ? 2.5 : 4}" class="pt" data-i="${i}"/>`).join("")}
+      ${pts.map(([px], i) => {
+        const left = i ? (pts[i - 1][0] + px) / 2 : padL, right = i < pts.length - 1 ? (pts[i + 1][0] + px) / 2 : W - padR;
+        return `<rect x="${left}" y="0" width="${right - left}" height="${H}" class="hit" data-i="${i}"/>`;
+      }).join("")}
+    </svg>
+    <div class="hm-tip muted small" id="wTip">Tap the chart to see a weigh-in.</div>`;
+}
+
+async function renderWeight() {
+  const el = $("#weightCard");
+  if (!el) return;
+  const d = await api("/api/weight");
+  const change = d.change_kg == null ? "" :
+    `<span class="muted small">${d.change_kg > 0 ? "+" : ""}${d.change_kg} kg since ${fmtDate(d.entries[0].date, { day: "numeric", month: "short" })}</span>`;
+  el.innerHTML = `
+    <div class="row between"><h3>Weight</h3>${change}</div>
+    ${d.latest ? `<div class="big-km" style="margin-top:4px">${d.latest.kg}<small> kg · ${fmtDate(d.latest.date, { day: "numeric", month: "short" })}</small></div>` : ""}
+    ${weightChart(d.entries)}
+    <form class="inline" id="weightForm" style="margin-top:12px">
+      <label>Weight (kg)<input name="kg" type="number" step="0.1" min="20" max="300" inputmode="decimal" required></label>
+      <label>Date<input name="date" type="date" value="${localToday()}" max="${localToday()}" required></label>
+      <button class="btn primary">Save</button>
+    </form>
+    ${state.garmin ? `<label class="small muted row" style="margin-top:8px"><input type="checkbox" name="to_garmin" form="weightForm" checked style="width:auto"> Also save to Garmin Connect</label>` : ""}
+    ${d.entries.length ? `<details><summary>All weigh-ins (${d.entries.length})</summary>
+      <table style="margin-top:8px"><tbody>${d.entries.slice().reverse().map((e) => `
+        <tr><td>${fmtDate(e.date)}</td><td>${e.kg} kg</td>
+        <td style="text-align:right"><button class="btn" style="min-height:32px;padding:4px 10px" data-del="${e.id}" aria-label="Delete">✕</button></td></tr>`).join("")}
+      </tbody></table></details>` : ""}`;
+
+  el.querySelectorAll(".wchart .hit").forEach((r) => r.addEventListener("click", () => {
+    const e = d.entries[r.dataset.i];
+    el.querySelectorAll(".wchart .pt").forEach((c) => c.classList.toggle("sel", c.dataset.i === r.dataset.i));
+    $("#wTip").innerHTML = `<b>${fmtDate(e.date)}</b> · ${e.kg} kg${e.note ? ` · ${esc(e.note)}` : ""}`;
+  }));
+  el.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+    await api(`/api/weight/${b.dataset.del}`, { method: "DELETE" });
+    renderWeight();
+  }));
+  $("#weightForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    try {
+      const r = await api("/api/weight", { method: "POST", body: JSON.stringify({
+        kg: Number(f.get("kg")), date: f.get("date"), to_garmin: f.get("to_garmin") === "on" }) });
+      toast(r.garmin_saved === true ? "Saved here and in Garmin" : r.garmin_saved === false ? "Saved here (Garmin didn't accept it)" : "Weight saved");
+      renderWeight();
     } catch (err) { toast(err.message); }
   });
 }
@@ -347,12 +452,25 @@ function show(view) {
   RENDER[view]().catch((e) => toast(e.message));
 }
 
+async function garminSync(force = false) {
+  const r = await api(`/api/garmin/sync${force ? "?force=true" : ""}`, { method: "POST" });
+  if (r.updated.length) toast(`⌚ ${r.updated.length} run${r.updated.length > 1 ? "s" : ""} synced from Garmin`);
+  else if (force) toast(r.unplanned.length ? "No new planned runs (extra runs on rest days ignored)" : "Up to date with Garmin");
+  return r.updated.length > 0;
+}
+
+async function autoSync() {
+  if (!state.garmin) return;
+  try { if (await garminSync()) refresh(); } catch (e) { /* stay quiet on background sync */ }
+}
+
 function refresh() {
   RENDER[state.current]().catch((e) => toast(e.message));
   if (state.current !== "today") api("/api/dashboard").then((d) => { $("#streakPill span").textContent = d.streaks.current_days; });
 }
 
 document.querySelectorAll(".tabbar button").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
-document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { refresh(); autoSync(); } });
 show("today");
+api("/api/dashboard").then((d) => { state.garmin = d.garmin_configured; autoSync(); }).catch(() => {});
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});

@@ -1,6 +1,6 @@
 # Marathon Trainer
 
-A personal phone web app for a 26-week marathon block (Oct 26 2026 → race Sun Apr 25 2027),
+A personal phone web app for a 26-week marathon block (first run Thu Oct 29 2026 → race Sun Apr 25 2027),
 starting from a 2:30 half marathon and working toward a 3:30 marathon.
 
 ## What it does
@@ -10,7 +10,19 @@ starting from a 2:30 half marathon and working toward a 3:30 marathon.
 - **Week** – the 7-day plan, planned vs. completed km, tap a day for details, send the whole week to Garmin.
 - **Streaks** – a 26-week heatmap of every day plus current/longest streaks and perfect weeks.
   Planned rest days keep your streak alive; a skipped or unlogged run breaks it.
-- **Progress** – predicted marathon time, progress toward 3:30, training paces, shoe km, test results.
+- **Progress** – predicted marathon time, progress toward 3:30, weight trend, training paces, shoe km, test results.
+- **Weight** – log a weigh-in whenever you like (one per day; a second entry replaces the first) and
+  optionally copy it to Garmin Connect.
+
+## Garmin, both ways
+
+- **App → watch:** *Send to watch* uploads the workout with pace targets and schedules it on your
+  Garmin calendar; sync the watch and it appears under today's workout.
+- **Watch → app:** when the app opens (at most every 10 minutes) or you tap *Get finished runs from Garmin*,
+  it reads your running activities since the plan began and marks the matching day's workout
+  done (or partial if under 80% of the planned distance), with real distance, time, pace and average HR.
+  Runs you logged by hand are never overwritten; runs on rest days are ignored.
+  Test results (time trials) still need the test time entered by hand.
 
 ## How the plan adapts
 
