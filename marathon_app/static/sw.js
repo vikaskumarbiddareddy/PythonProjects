@@ -1,5 +1,5 @@
 // Network-first: always show fresh plan data, fall back to cache when offline.
-const CACHE = "marathon-v1";
+const CACHE = "marathon-v2";
 const SHELL = ["/", "/static/style.css", "/static/app.js", "/static/icon.svg", "/static/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
