@@ -159,7 +159,7 @@ def test_garmin_workout_payload(plan):
 
     w = next(x for x in plan if x.week == 5 and x.kind == "quality")
     payload = build_workout({"week": w.week, "title": w.title, "steps": w.steps, "shoe": w.shoe,
-                             "notes": w.notes, "planned_km": w.planned_km}, 28.0).to_dict()
+                             "notes": w.notes, "planned_km": w.planned_km}, paces.zone_paces(28.0)).to_dict()
     steps = payload["workoutSegments"][0]["workoutSteps"]
     assert [s["stepType"]["stepTypeKey"] for s in steps] == ["warmup", "repeat", "cooldown"]
     rep = steps[1]
@@ -360,3 +360,134 @@ def test_host_check(tmp_path, monkeypatch):
     finally:
         monkeypatch.delenv("ALLOWED_HOSTS")
         importlib.reload(main)
+
+
+# --- Dec 6 half-marathon block ----------------------------------------------
+
+HALF = date(2026, 12, 6)
+
+
+@pytest.fixture(scope="module")
+def half_plan():
+    return generate_plan(START, RACE, date(2026, 10, 29), HALF)
+
+
+def test_half_block_structure(half_plan):
+    from app.plan import HALF_BLOCK_KM
+    by_week = defaultdict(list)
+    for w in half_plan:
+        by_week[w.week].append(w)
+    for week, km in HALF_BLOCK_KM.items():
+        items = by_week[week]
+        assert sum(w.kind != "rest" for w in items) == 4
+        assert [w.date.weekday() for w in items if w.kind == "rest"] == [0, 2, 4]
+        assert abs(sum(w.planned_km for w in items) - km) <= 1, week
+    race = next(w for w in half_plan if w.date == HALF)
+    assert (race.kind, race.test_distance_km, race.shoe) == ("race", 21.0975, MAGIC_SPEED)
+    assert race.steps[0]["zone"] == "H"
+    assert max(w.planned_km for w in by_week[4] + by_week[5] + by_week[6] if w.kind == "long") == 18
+    assert all(w.kind in ("rest", "easy", "long", "recovery") for w in by_week[7])  # recovery week
+    assert by_week[4][1].kind == "test" and "race goal" in by_week[4][1].notes
+    # Weeks outside the block are the normal marathon plan.
+    normal = generate_plan(START, RACE, date(2026, 10, 29))
+    assert [(w.date, w.title) for w in half_plan if w.week in (1, 2) or w.week >= 8] == \
+           [(w.date, w.title) for w in normal if w.week in (1, 2) or w.week >= 8]
+
+
+def test_half_race_must_be_week_6_sunday():
+    with pytest.raises(ValueError):
+        generate_plan(START, RACE, half_race=date(2026, 12, 5))
+
+
+def test_half_goal_zone_and_hr():
+    z = paces.zone_paces(30.3, paces.parse_time("2:10:00"))
+    assert list(z) == ["E", "M", "H", "T", "I", "R"]
+    assert paces.fmt_pace(sum(z["H"]) / 2) == "6:10"
+    assert "H" not in paces.zone_paces(30.3)
+    assert paces.max_hr_for_age(36) == 183 and paces.easy_hr_ceiling(183) == 143
+
+
+def test_garmin_targets_half_pace(half_plan):
+    from app.garmin import build_workout
+    w = next(x for x in half_plan if x.title.startswith("Half pace 3 x 2 km"))
+    zones = paces.zone_paces(30.3, paces.parse_time("2:10:00"))
+    payload = build_workout({"week": w.week, "title": w.title, "steps": w.steps, "shoe": w.shoe,
+                             "notes": w.notes, "planned_km": w.planned_km}, zones).to_dict()
+    interval = payload["workoutSegments"][0]["workoutSteps"][1]["workoutSteps"][0]
+    fast, slow = zones["H"]
+    assert interval["targetType"]["workoutTargetTypeKey"] == "pace.zone"
+    assert interval["targetValueOne"] == pytest.approx(1000 / slow)
+
+
+def test_new_install_has_half_block_and_2_20_start(client):
+    t = "today=2026-11-03"
+    p = client.get(f"/api/progress?{t}").json()
+    assert p["tests"][0]["time"] == "2:20:00" and p["tests"][0]["vdot"] == 30.3
+    assert p["half"]["goal"] == "2:15:00" and p["half"]["recommended"] == "C"
+    assert {o["label"]: o["five_k"] for o in p["half"]["options"]}["Stretch"] == "24:59"
+    assert p["max_hr"] == 183 and p["hr_zones"][0]["high"] == 143
+    d = client.get(f"/api/dashboard?{t}").json()
+    assert d["next_race"] == {"date": "2026-12-06", "label": "Half", "days": 33}
+    w5 = client.get(f"/api/week?week=5&{t}").json()
+    assert w5["phase"] == "Half-marathon prep"
+    tue = w5["workouts"][1]
+    assert tue["steps"][1]["steps"][0]["pace"] == "6:19–6:29 /km"  # 2:15 goal pace +-5 s
+    assert w5["workouts"][3]["hr_hint"] == "Easy effort: keep heart rate under 143 bpm"
+
+
+def test_set_half_goal_and_max_hr(client):
+    t = "today=2026-11-03"
+    assert client.post("/api/half-goal", json={"time": "2:05:00"}).status_code == 200
+    w5 = client.get(f"/api/week?week=5&{t}").json()
+    assert w5["workouts"][1]["steps"][1]["steps"][0]["pace"] == "5:50–6:00 /km"
+    assert client.get(f"/api/progress?{t}").json()["half"]["goal"] == "2:05:00"
+    assert client.post("/api/half-goal", json={"time": "9:99"}).status_code == 400
+    assert client.post("/api/half-goal", json={"time": "0:50:00"}).status_code == 400
+    assert client.post("/api/max-hr", json={"max_hr": 188}).status_code == 200
+    assert client.get(f"/api/progress?{t}").json()["hr_zones"][0]["high"] == 147
+    assert client.post("/api/max-hr", json={"max_hr": 90}).status_code == 422
+
+
+def test_revision_upgrades_existing_phone_install(tmp_path, monkeypatch):
+    """A database from the previous version gets the half block on future unlogged days only."""
+    import json as _json
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "phone.db")
+    db.init_db()
+    old_plan = generate_plan(START, RACE, date(2026, 10, 29))
+    with db.connect() as conn:  # rewind it to how the previous version left it
+        conn.execute("DELETE FROM settings WHERE key IN ('plan_revision', 'half_race', 'half_goal_s', 'max_hr')")
+        conn.execute("UPDATE fitness SET time_s = 9000, vdot = 27.9 WHERE source = 'initial'")
+        for w in old_plan:
+            conn.execute("UPDATE workouts SET week=?, phase=?, kind=?, title=?, steps=?, shoe=?, planned_km=?, "
+                         "notes=?, test_distance_km=? WHERE date=?",
+                         (w.week, w.phase, w.kind, w.title, _json.dumps(w.steps), w.shoe, w.planned_km, w.notes,
+                          w.test_distance_km, w.date.isoformat()))
+        conn.execute("UPDATE workouts SET status='done', actual_km=8 WHERE date='2026-11-03'")  # logged today
+        conn.execute("UPDATE workouts SET status='skipped' WHERE date='2026-11-12'")  # future but already logged
+        old_nov12 = conn.execute("SELECT title FROM workouts WHERE date='2026-11-12'").fetchone()["title"]
+        db._apply_revisions(conn, today=date(2026, 11, 3))
+        rows = {r["date"]: dict(r) for r in conn.execute("SELECT * FROM workouts")}
+        settings = {r["key"]: _json.loads(r["value"]) for r in conn.execute("SELECT * FROM settings")}
+        initial = conn.execute("SELECT * FROM fitness WHERE source = 'initial'").fetchone()
+    assert rows["2026-11-03"]["status"] == "done" and rows["2026-11-03"]["actual_km"] == 8
+    assert rows["2026-11-12"]["status"] == "skipped" and rows["2026-11-12"]["title"] == old_nov12
+    assert rows["2026-12-06"]["title"] == "HALF MARATHON RACE"
+    assert rows["2026-11-21"]["title"] == "Long run 18 km"
+    assert rows["2026-10-31"]["title"] == "Long run 12 km"  # past days untouched
+    assert settings["plan_revision"] == 2 and settings["half_goal_s"] == 8100 and settings["max_hr"] == 183
+    assert initial["time_s"] == 8400 and round(initial["vdot"], 1) == 30.3
+    with db.connect() as conn:  # running it again changes nothing
+        before = [dict(r) for r in conn.execute("SELECT * FROM workouts")]
+        db._apply_revisions(conn, today=date(2026, 11, 3))
+        assert [dict(r) for r in conn.execute("SELECT * FROM workouts")] == before
+
+
+def test_half_race_result_resets_paces(client):
+    t = "today=2026-12-06"
+    before = client.get(f"/api/progress?{t}").json()["measured_vdot"]
+    r = client.post(f"/api/workouts/2026-12-06/log?{t}", json={"status": "done", "test_time": "2:08:30"})
+    assert r.status_code == 200
+    p = client.get(f"/api/progress?{t}").json()
+    assert p["measured_vdot"] > before and p["tests"][-1]["time"] == "2:08:30"
+    assert p["half"]["result"] is True

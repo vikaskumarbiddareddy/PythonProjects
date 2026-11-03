@@ -1,7 +1,7 @@
 # Marathon Trainer
 
 A personal phone web app for a 26-week marathon block (first run Thu Oct 29 2026 → race Sun Apr 25 2027),
-starting from a 2:30 half marathon and working toward a 3:30 marathon.
+starting from a 2:20 half marathon, with a half marathon on Sun Dec 6, working toward a 3:30 marathon.
 
 ## What it does
 
@@ -23,6 +23,26 @@ starting from a 2:30 half marathon and working toward a 3:30 marathon.
   done (or partial if under 80% of the planned distance), with real distance, time, pace and average HR.
   Runs you logged by hand are never overwritten; runs on rest days are ignored.
   Test results (time trials) still need the test time entered by hand.
+
+## Dec 6 half marathon
+
+Weeks 3-7 are a half-marathon block inside the marathon plan:
+
+| Week | Tue | Thu | Sat | Sun |
+|---|---|---|---|---|
+| 3 (Nov 9) | 3 x 1.5 km threshold | easy 7 + strides | 15 km, last 3 @ half pace | recovery 5 |
+| 4 (Nov 16) | **5K time trial** - picks the race goal | easy 7 | 18 km | recovery 4 |
+| 5 (Nov 23) | 3 x 2 km @ half pace | easy 6 | 12 km rehearsal, 6 @ half pace | recovery 4 |
+| 6 (Nov 30) | 4 x 1 km @ half pace | easy 5 | shakeout 3 km | **race** |
+| 7 (Dec 7) | recovery week: easy runs only | | | |
+
+Half pace (zone H) comes from the race goal chosen on **Progress**: Stretch 1:55, A 2:05, B 2:10,
+C 2:15 (default until the 5K test; ★ marks the goal that fits current fitness). Changing the goal
+updates every half-pace workout; re-send the week to the watch. Log the finish time on race day and
+the result resets your training paces for the marathon build that resumes in week 8.
+
+Heart rate: easy days show a ceiling (78% of max HR; max estimated from age 36 = 183, editable on
+Progress).
 
 ## How the plan adapts
 

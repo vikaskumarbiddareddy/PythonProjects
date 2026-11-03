@@ -79,8 +79,16 @@ def _fitness(conn, workouts, today):
     return progress.training_fitness(workouts, _tests(conn), today)
 
 
-def _with_paces(w: dict, zones: dict, today: date) -> dict:
-    """Attach human-readable pace ranges to each step for display."""
+def _zones(conn, vdot: float) -> dict:
+    return paces.zone_paces(vdot, db.get_setting(conn, "half_goal_s"))
+
+
+HALF_GOALS = [("Stretch", "1:55:00"), ("A", "2:05:00"), ("B", "2:10:00"), ("C", "2:15:00")]
+EASY_KINDS = ("easy", "long", "recovery")
+
+
+def _with_paces(w: dict, zones: dict, today: date, easy_hr: int | None = None) -> dict:
+    """Attach human-readable pace ranges (and easy-day heart-rate guidance) for display."""
     def walk(steps):
         out = []
         for s in steps:
@@ -97,7 +105,17 @@ def _with_paces(w: dict, zones: dict, today: date) -> dict:
     w = dict(w)
     w["steps"] = walk(w["steps"])
     w["state"] = progress.day_state(w, today)
+    if easy_hr and w["kind"] in EASY_KINDS:
+        w["hr_hint"] = f"Easy effort: keep heart rate under {easy_hr} bpm"
     return w
+
+
+def _next_race(workouts: list[dict], today: date) -> dict | None:
+    for w in workouts:
+        if w["kind"] == "race" and date.fromisoformat(w["date"]) >= today:
+            label = "Half" if (w["test_distance_km"] or 0) < 30 else "Marathon"
+            return {"date": w["date"], "label": label, "days": (date.fromisoformat(w["date"]) - today).days}
+    return None
 
 
 def _get(conn, day: str) -> dict:
@@ -120,7 +138,8 @@ def dashboard(today: str | None = None):
     with db.connect() as conn:
         workouts = _all(conn)
         fit = _fitness(conn, workouts, t)
-        zones = paces.zone_paces(fit["vdot"])
+        zones = _zones(conn, fit["vdot"])
+        easy_hr = paces.easy_hr_ceiling(db.get_setting(conn, "max_hr"))
         by_date = {w["date"]: w for w in workouts}
         today_w = by_date.get(t.isoformat())
         tomorrow_w = by_date.get((t + timedelta(days=1)).isoformat())
@@ -129,7 +148,8 @@ def dashboard(today: str | None = None):
             "today": t.isoformat(),
             "week": _week_number(conn, t),
             "days_to_race": (race_day - t).days,
-            "workout": _with_paces(today_w, zones, t) if today_w else None,
+            "next_race": _next_race(workouts, t),
+            "workout": _with_paces(today_w, zones, t, easy_hr) if today_w else None,
             "tomorrow": _with_paces(tomorrow_w, zones, t) if tomorrow_w else None,
             "streaks": progress.streaks(workouts, t),
             "predicted_marathon": paces.fmt_time(fit["predicted_marathon_s"]),
@@ -143,8 +163,9 @@ def week(today: str | None = None, week: int | None = Query(None, ge=1, le=26)):
     with db.connect() as conn:
         workouts = _all(conn)
         n = week or _week_number(conn, t)
-        zones = paces.zone_paces(_fitness(conn, workouts, t)["vdot"])
-        items = [_with_paces(w, zones, t) for w in workouts if w["week"] == n]
+        zones = _zones(conn, _fitness(conn, workouts, t)["vdot"])
+        easy_hr = paces.easy_hr_ceiling(db.get_setting(conn, "max_hr"))
+        items = [_with_paces(w, zones, t, easy_hr) for w in workouts if w["week"] == n]
         return {
             "week": n,
             "phase": items[0]["phase"],
@@ -179,7 +200,11 @@ def progress_view(today: str | None = None):
                 """SELECT COALESCE(SUM(COALESCE(actual_km, planned_km)), 0) FROM workouts
                    WHERE shoe = ? AND status IN ('done', 'partial')""", (s["name"],)).fetchone()[0]
             shoes.append({"name": s["name"], "km": round(s["start_km"] + km, 1), "retire_km": s["retire_km"]})
+        max_hr = db.get_setting(conn, "max_hr")
         return {
+            "half": _half_summary(conn, workouts, fit["vdot"], t),
+            "max_hr": max_hr,
+            "hr_zones": paces.hr_zones(max_hr),
             "vdot": fit["vdot"],
             "measured_vdot": fit["measured_vdot"],
             "bonus": fit["bonus"],
@@ -190,13 +215,70 @@ def progress_view(today: str | None = None):
             "goal_vdot": round(goal_vdot, 1),
             "goal_progress": round(max(0.0, (fit["vdot"] - start_vdot) / (goal_vdot - start_vdot)), 3),
             "zones": [{"zone": z, "name": paces.ZONE_NAMES[z], "fast": paces.fmt_pace(f), "slow": paces.fmt_pace(s)}
-                      for z, (f, s) in paces.zone_paces(fit["vdot"]).items()],
+                      for z, (f, s) in _zones(conn, fit["vdot"]).items()],
             "tests": [{**r, "time": paces.fmt_time(r["time_s"]), "vdot": round(r["vdot"], 1)} for r in _tests(conn)],
             "shoes": shoes,
         }
 
 
+def _half_summary(conn, workouts: list[dict], vdot: float, today: date) -> dict | None:
+    """The upcoming half-marathon race: chosen goal, prediction and the A/B/C options."""
+    race = next((w for w in workouts if w["kind"] == "race" and (w["test_distance_km"] or 0) < 30), None)
+    if not race:
+        return None
+    goal_s = db.get_setting(conn, "half_goal_s")
+    predicted_s = paces.predict_time_s(vdot, paces.HALF_KM)
+    options = []
+    for label, text in HALF_GOALS:
+        s = paces.parse_time(text)
+        options.append({
+            "label": label, "time": text, "seconds": s, "pace": paces.fmt_pace(s / paces.HALF_KM),
+            "five_k": paces.fmt_time(paces.predict_time_s(paces.vdot_from_race(paces.HALF_KM, s), 5))[2:],
+        })
+    # Recommend the fastest goal no more than a minute quicker than current fitness predicts.
+    fitting = [o for o in options if o["seconds"] >= predicted_s - 60]
+    recommended = (fitting[0] if fitting else options[-1])["label"]
+    return {
+        "date": race["date"],
+        "days": (date.fromisoformat(race["date"]) - today).days,
+        "goal": paces.fmt_time(goal_s),
+        "goal_pace": paces.fmt_pace(goal_s / paces.HALF_KM),
+        "predicted": paces.fmt_time(predicted_s),
+        "options": options,
+        "recommended": recommended,
+        "result": race["status"] == "done",
+    }
+
+
 # --- write endpoints --------------------------------------------------------
+
+
+class HalfGoalIn(BaseModel):
+    time: str
+
+
+@app.post("/api/half-goal")
+def set_half_goal(body: HalfGoalIn):
+    try:
+        seconds = paces.parse_time(body.time)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not 75 * 60 <= seconds <= 4 * 3600:
+        raise HTTPException(400, "Goal must be between 1:15:00 and 4:00:00")
+    with db.connect() as conn:
+        db.set_setting(conn, "half_goal_s", seconds)
+    return {"ok": True}
+
+
+class MaxHrIn(BaseModel):
+    max_hr: int = Field(ge=140, le=230)
+
+
+@app.post("/api/max-hr")
+def set_max_hr(body: MaxHrIn):
+    with db.connect() as conn:
+        db.set_setting(conn, "max_hr", body.max_hr)
+    return {"ok": True}
 
 class LogIn(BaseModel):
     status: str = Field(pattern="^(planned|done|partial|skipped)$")
@@ -265,7 +347,7 @@ def garmin_push(body: PushIn, today: str | None = None):
     t = _today(today)
     with db.connect() as conn:
         workouts = _all(conn)
-        vdot = _fitness(conn, workouts, t)["vdot"]
+        zones = _zones(conn, _fitness(conn, workouts, t)["vdot"])
         if body.date:
             targets = [_get(conn, body.date)]
         elif body.week:
@@ -279,7 +361,7 @@ def garmin_push(body: PushIn, today: str | None = None):
             api = garmin.login()
             pushed = []
             for w in targets:
-                wid = garmin.push(api, w, vdot)
+                wid = garmin.push(api, w, zones)
                 conn.execute("UPDATE workouts SET garmin_workout_id = ? WHERE date = ?", (wid, w["date"]))
                 conn.commit()
                 pushed.append(w["date"])
