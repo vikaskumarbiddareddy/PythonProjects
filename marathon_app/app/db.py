@@ -16,9 +16,15 @@ DEFAULTS = {
     "plan_start": "2026-10-26",
     "race_day": "2027-04-25",
     "first_run": "2026-10-29",
+    "half_race": "2026-12-06",
     "goal_time_s": 3 * 3600 + 30 * 60,
-    "initial_test": {"distance_km": paces.HALF_KM, "time_s": 2 * 3600 + 30 * 60},
+    "half_goal_s": 2 * 3600 + 15 * 60,  # goal C until the 5K test picks the real one
+    "max_hr": paces.max_hr_for_age(36),
+    # The 2:30 half was an off day; 2:20 is the agreed starting point.
+    "initial_test": {"distance_km": paces.HALF_KM, "time_s": 2 * 3600 + 20 * 60},
 }
+PLAN_KEYS = ("plan_start", "race_day", "first_run", "half_race")
+PLAN_REVISION = 2  # bump when the plan changes; _apply_revisions updates existing installs
 SHOES = [(PEGASUS, 700), (MAGIC_SPEED, 500)]  # name, retire-at km
 
 SCHEMA = """
@@ -84,7 +90,9 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
         _migrate(conn)
         if conn.execute("SELECT COUNT(*) FROM workouts").fetchone()[0]:
+            _apply_revisions(conn)
             return
+        set_setting(conn, "plan_revision", PLAN_REVISION)
         for key, value in DEFAULTS.items():
             conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (key, json.dumps(value)))
         for name, retire in SHOES:
@@ -95,7 +103,7 @@ def init_db() -> None:
             (DEFAULTS["plan_start"], test["distance_km"], test["time_s"],
              paces.vdot_from_race(test["distance_km"], test["time_s"])),
         )
-        plan = generate_plan(*(date.fromisoformat(DEFAULTS[k]) for k in ("plan_start", "race_day", "first_run")))
+        plan = generate_plan(*(date.fromisoformat(DEFAULTS[k]) for k in PLAN_KEYS))
         conn.executemany(
             """INSERT INTO workouts (date, week, phase, kind, title, steps, shoe, planned_km, notes, test_distance_km)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -110,6 +118,38 @@ def _migrate(conn) -> None:
     for col, decl in (("garmin_activity_id", "TEXT"), ("avg_hr", "INTEGER")):
         if col not in have:
             conn.execute(f"ALTER TABLE workouts ADD COLUMN {col} {decl}")
+
+
+def _apply_revisions(conn, today: date | None = None) -> None:
+    """Bring a database created by an older version up to the current plan.
+
+    Only future days that are still unlogged are rewritten; anything already
+    done, skipped, partial or synced from Garmin is left exactly as it was.
+    """
+    revision = get_setting(conn, "plan_revision") or 1
+    if revision >= PLAN_REVISION:
+        return
+    today = today or date.today()
+    if revision < 2:
+        for key in ("half_race", "half_goal_s", "max_hr"):
+            conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (key, json.dumps(DEFAULTS[key])))
+        old, new = 2 * 3600 + 30 * 60, DEFAULTS["initial_test"]["time_s"]
+        conn.execute(
+            "UPDATE fitness SET time_s = ?, vdot = ? WHERE source = 'initial' AND time_s = ?",
+            (new, paces.vdot_from_race(paces.HALF_KM, new), old),
+        )
+    plan = generate_plan(*(date.fromisoformat(get_setting(conn, k)) for k in PLAN_KEYS))
+    for w in plan:
+        if w.date < today:
+            continue
+        conn.execute(
+            """UPDATE workouts SET week = ?, phase = ?, kind = ?, title = ?, steps = ?, shoe = ?, planned_km = ?,
+                   notes = ?, test_distance_km = ?
+               WHERE date = ? AND status = 'planned' AND actual_km IS NULL AND garmin_activity_id IS NULL""",
+            (w.week, w.phase, w.kind, w.title, json.dumps(w.steps), w.shoe, w.planned_km, w.notes,
+             w.test_distance_km, w.date.isoformat()),
+        )
+    set_setting(conn, "plan_revision", PLAN_REVISION)
 
 
 def get_setting(conn, key):

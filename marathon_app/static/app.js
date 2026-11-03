@@ -94,7 +94,7 @@ function workoutCard(w, { hero = false, garmin = false } = {}) {
   if (w.kind === "rest") {
     return `<div class="card"><h2>Rest day</h2><p class="muted">${esc(w.notes || "Recover well.")}</p></div>`;
   }
-  const isTest = w.test_distance_km && w.kind !== "race";
+  const isTest = Boolean(w.test_distance_km);  // time trials and races: the result updates paces
   return `
   <div class="card ${hero ? "hero" : ""}" data-date="${w.date}">
     <div class="row between wrap">
@@ -107,6 +107,7 @@ function workoutCard(w, { hero = false, garmin = false } = {}) {
       ${shoeChip(w.shoe)}
     </div>
     ${w.notes ? `<p class="muted small">${esc(w.notes)}</p>` : ""}
+    ${w.hr_hint ? `<p class="small muted">♥ ${esc(w.hr_hint)}</p>` : ""}
     ${actualLine(w)}
     ${renderSteps(w.steps)}
     <div class="btn-row">
@@ -114,10 +115,10 @@ function workoutCard(w, { hero = false, garmin = false } = {}) {
       <button class="btn ${w.status === "partial" ? "selected" : ""}" data-act="partial">½ Partial</button>
       <button class="btn ${w.status === "skipped" ? "selected" : ""}" data-act="skipped">✕ Skip</button>
     </div>
-    <details ${isTest && w.status !== "done" ? "open" : ""}>
-      <summary>${isTest ? "Log your test result" : "Add details"}</summary>
+    <details ${isTest && w.status !== "done" && w.state !== "future" ? "open" : ""}>
+      <summary>${!isTest ? "Add details" : w.kind === "race" ? "Log your race result" : "Log your test result"}</summary>
       <form class="log">
-        ${isTest ? `<label class="full">Test result (${w.test_distance_km} km time, h:mm:ss)
+        ${isTest ? `<label class="full">${w.kind === "race" ? "Finish time" : "Test result"} (${w.test_distance_km} km, h:mm:ss)
           <input name="test_time" inputmode="numeric" placeholder="${w.test_distance_km > 10 ? "2:20:00" : "28:30"}"></label>` : ""}
         <label>Distance (km)<input name="actual_km" type="number" step="0.01" inputmode="decimal" value="${w.actual_km ?? ""}"></label>
         <label>Total time<input name="actual_time" inputmode="numeric" placeholder="1:05:00"></label>
@@ -171,7 +172,9 @@ function bindWorkoutCard(root, onChange) {
 
 async function renderToday() {
   const d = await api("/api/dashboard");
-  $("#topWeek").textContent = `Week ${d.week} of 26 · ${d.days_to_race} days to race`;
+  const race = d.next_race;
+  const countdown = !race ? "" : race.days === 0 ? ` · 🏁 ${race.label} today!` : ` · 🏁 ${race.label} in ${race.days}d`;
+  $("#topWeek").textContent = `Week ${d.week}/26${countdown}`;
   $("#topTitle").textContent = fmtDate(d.today, { weekday: "long", day: "numeric", month: "long" });
   $("#streakPill span").textContent = d.streaks.current_days;
 
@@ -310,8 +313,28 @@ async function renderStreaks() {
 async function renderProgress() {
   const d = await api("/api/progress");
   const el = $("#view-progress");
+  const h = d.half;
   el.innerHTML = `
+    ${h && h.days >= 0 ? `
     <div class="card hero">
+      <div class="eyebrow">🏁 Half marathon · ${fmtDate(h.date)} · ${h.days === 0 ? "today" : `${h.days} days`}</div>
+      <div class="row between" style="margin-top:4px;align-items:baseline">
+        <div class="hero-time">${h.goal}</div><div class="muted">${h.goal_pace} /km</div>
+      </div>
+      <div class="muted small">Race goal · current fitness predicts <b>${h.predicted}</b></div>
+      <div class="goal-grid">
+        ${h.options.map((o) => `
+          <button class="btn goal-opt ${o.time === h.goal ? "selected primary" : ""}" data-goal="${o.time}">
+            <span class="g-label">${o.label}${o.label === h.recommended ? " ★" : ""}</span>
+            <b>${o.time.replace(/:00$/, "")}</b>
+            <span class="g-sub">${o.pace}/km · 5K ${o.five_k}</span>
+          </button>`).join("")}
+      </div>
+      <p class="small muted" style="margin-bottom:0">★ fits your current fitness. Your 5K test on Nov 17 updates it;
+        "5K" shows the test time each goal needs. Changing the goal updates every half-pace workout. Re-send the week to your watch afterwards.</p>
+    </div>` : ""}
+
+    <div class="card ${h && h.days >= 0 ? "" : "hero"}">
       <div class="eyebrow">Predicted marathon today</div>
       <div class="hero-time">${d.predicted_marathon}</div>
       <div class="muted small">Half marathon equivalent ${d.predicted_half} · fitness (VDOT) ${d.vdot}</div>
@@ -330,6 +353,21 @@ async function renderProgress() {
       <table style="margin-top:8px"><thead><tr><th>Zone</th><th>Pace /km</th></tr></thead><tbody>
         ${d.zones.map((z) => `<tr><td>${z.name}</td><td>${z.fast} – ${z.slow}</td></tr>`).join("")}
       </tbody></table>
+    </div>
+
+    <div class="card">
+      <div class="row between"><h3>Heart rate</h3>
+        <form id="hrForm" class="row" style="gap:6px">
+          <label class="small muted row" style="gap:6px">Max
+            <input name="max_hr" type="number" min="140" max="230" inputmode="numeric" value="${d.max_hr}" style="width:72px;padding:6px 8px"></label>
+          <button class="btn" style="min-height:36px;padding:6px 10px">Save</button>
+        </form>
+      </div>
+      <table style="margin-top:8px"><thead><tr><th>Zone</th><th>bpm</th></tr></thead><tbody>
+        ${d.hr_zones.map((z) => `<tr><td>${z.name}</td><td>${z.low} – ${z.high}</td></tr>`).join("")}
+      </tbody></table>
+      <p class="small muted" style="margin-bottom:0">Estimated from age 36. If Garmin shows a measured max
+        (Settings → User Settings → Heart Rate Zones), enter it above.</p>
     </div>
 
     <div class="card">
@@ -368,6 +406,22 @@ async function renderProgress() {
     </div>`;
 
   renderWeight();
+
+  el.querySelectorAll("[data-goal]").forEach((b) => b.addEventListener("click", async () => {
+    try {
+      await api("/api/half-goal", { method: "POST", body: JSON.stringify({ time: b.dataset.goal }) });
+      toast(`Race goal ${b.dataset.goal.replace(/:00$/, "")}: half-pace workouts updated`);
+      renderProgress();
+    } catch (err) { toast(err.message); }
+  }));
+  $("#hrForm", el).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      await api("/api/max-hr", { method: "POST", body: JSON.stringify({ max_hr: Number(new FormData(e.target).get("max_hr")) }) });
+      toast("Max heart rate saved");
+      renderProgress();
+    } catch (err) { toast(err.message); }
+  });
 
   $("#restoreFile", el).addEventListener("change", async (e) => {
     const file = e.target.files[0];

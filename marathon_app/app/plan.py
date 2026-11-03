@@ -1,8 +1,8 @@
 """26-week marathon plan generator.
 
-Workouts are stored as structured steps that reference pace zones (E/M/T/I/R),
-not absolute paces, so every future workout speeds up automatically when the
-runner's fitness (VDOT) improves.
+Workouts are stored as structured steps that reference pace zones (E/M/T/I/R,
+plus H = half-marathon goal pace), not absolute paces, so every future workout
+speeds up automatically when the runner's fitness (VDOT) or race goal changes.
 
 Week layout (4 run days, long run Saturday):
     Mon rest | Tue quality | Wed rest | Thu easy/steady | Fri rest | Sat long | Sun recovery
@@ -27,8 +27,16 @@ WEEKS = [
 ]
 PLAN_WEEKS = len(WEEKS)
 
+# Optional half-marathon race on the Sunday of week 6, prepared in weeks 3-6
+# with a recovery week 7. Planned km per week for that block:
+HALF_WEEKS = range(3, 8)
+HALF_RACE_WEEK = 6
+HALF_BLOCK_KM = {3: 36, 4: 38, 5: 32, 6: 37, 7: 25}
 
-def phase_for(week: int) -> str:
+
+def phase_for(week: int, half: bool = False) -> str:
+    if half and week in HALF_WEEKS:
+        return "Recovery" if week > HALF_RACE_WEEK else "Half-marathon prep"
     if week <= 8:
         return "Base"
     if week <= 16:
@@ -180,8 +188,58 @@ def _thursday(week: int, km: float) -> tuple[str, list]:
     return (f"Easy {km:g} km", [run(km)])
 
 
+def _half_block(week: int) -> list[tuple]:
+    """Day specs (offset, kind, title, steps, notes, test_km) for runs in the half-marathon block."""
+    match week:
+        case 3:
+            return [
+                (1, "quality", "Cruise intervals 3 x 1.5 km",
+                 quality_session([repeat(3, run(1.5, "T"), jog(120))], 9), "", None),
+                (3, "easy", "Easy 7 km + strides", [run(6), strides(4)], "", None),
+                (5, "long", "Long run 15 km, last 3 km @ half pace", [run(12), run(3, "H")],
+                 "Finish at your half-marathon goal pace: controlled, not racing.", None),
+                (6, "recovery", "Recovery 5 km", [run(5)], "Very easy. Slower than you think.", None),
+            ]
+        case 4:
+            return [
+                (1, "test", "5K time trial", quality_session([run(5, None)], 9),
+                 "All-out effort. Your result updates your paces and picks your Dec 6 race goal.", 5.0),
+                (3, "easy", "Easy 7 km", [run(7)], "", None),
+                (5, "long", "Long run 18 km", [run(18)], "Your longest run before the race. Keep it easy.", None),
+                (6, "recovery", "Recovery 4 km", [run(4)], "Very easy. Slower than you think.", None),
+            ]
+        case 5:
+            return [
+                (1, "quality", "Half pace 3 x 2 km",
+                 quality_session([repeat(3, run(2, "H"), jog(120))], 10), "Lock in your race pace.", None),
+                (3, "easy", "Easy 6 km", [run(6)], "", None),
+                (5, "long", "Race rehearsal 12 km, 6 km @ half pace", [run(4), run(6, "H"), run(2)],
+                 "Wear your Magic Speed 5 and race-day kit; practise your drinks and gels.", None),
+                (6, "recovery", "Recovery 4 km", [run(4)], "Very easy. Slower than you think.", None),
+            ]
+        case 6:
+            return [
+                (1, "quality", "Sharpener 4 x 1 km @ half pace",
+                 quality_session([repeat(4, run(1, "H"), jog(90))], 8), "Short and sharp. Race week.", None),
+                (3, "easy", "Easy 5 km", [run(5)], "", None),
+                (5, "easy", "Shakeout 3 km + strides", [run(2), strides(4)], "Loosen up. Lay out your kit.", None),
+                (6, "race", "HALF MARATHON RACE", [run(21.1, "H")],
+                 "First 5 km 5-10 s/km slower than goal, settle into goal pace, push from 16 km if you feel strong.",
+                 21.0975),
+            ]
+        case 7:
+            note = "Recovery week after the race: no workouts, keep it truly easy."
+            return [
+                (1, "easy", "Easy 5 km", [run(5)], note, None),
+                (3, "easy", "Easy 6 km", [run(6)], note, None),
+                (5, "long", "Easy long run 10 km", [run(10)], note, None),
+                (6, "recovery", "Recovery 4 km", [run(4)], "Very easy. Slower than you think.", None),
+            ]
+    raise ValueError(week)
+
+
 def _shoe_for(kind: str, steps) -> str:
-    fast = {"T", "I", "R", "M"}
+    fast = {"T", "I", "R", "M", "H"}
 
     def fast_km(ss):
         return sum(
@@ -196,21 +254,26 @@ def _shoe_for(kind: str, steps) -> str:
     return MAGIC_SPEED if fast_km(steps) >= 4 else PEGASUS
 
 
-def generate_plan(start: date, race_day: date, first_run: date | None = None) -> list[Workout]:
+def generate_plan(start: date, race_day: date, first_run: date | None = None,
+                  half_race: date | None = None) -> list[Workout]:
     """start must be a Monday; race_day is the Sunday of week 26.
 
     Runs scheduled before first_run become rest days (an easier entry into week 1).
+    half_race, if given, must be the Sunday of week 6 and replaces weeks 3-7 with
+    the half-marathon block.
     """
     if start.weekday() != 0:
         raise ValueError("Plan must start on a Monday")
     if race_day != start + timedelta(weeks=PLAN_WEEKS - 1, days=6):
         raise ValueError("Race day must be the Sunday of the final plan week")
+    if half_race and half_race != start + timedelta(weeks=HALF_RACE_WEEK - 1, days=6):
+        raise ValueError(f"Half-marathon race must be the Sunday of week {HALF_RACE_WEEK}")
 
     workouts: list[Workout] = []
     for i, (week_km, long_km) in enumerate(WEEKS):
         week = i + 1
         monday = start + timedelta(weeks=i)
-        phase = phase_for(week)
+        phase = phase_for(week, half=bool(half_race))
         day = lambda offset: monday + timedelta(days=offset)
 
         rest_km = week_km - long_km
@@ -226,6 +289,15 @@ def generate_plan(start: date, race_day: date, first_run: date | None = None) ->
             workouts.append(Workout(day(offset), week, phase, kind, title, steps, shoe, notes, test_km))
 
         add(0, "rest", "Rest day", notes="Mobility or an easy walk is fine.")
+
+        if half_race and week in HALF_WEEKS:
+            runs = {spec[0]: spec for spec in _half_block(week)}
+            for offset in range(1, 7):
+                if offset in runs:
+                    add(*runs[offset])
+                else:
+                    add(offset, "rest", "Rest day", notes="Rest before the long run." if offset == 4 else "")
+            continue
 
         title, kind, steps, test_km = _tuesday(week, tue_km)
         # Time trials run long; take the excess off Sunday to protect the cutback week.

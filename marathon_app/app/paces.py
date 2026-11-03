@@ -15,6 +15,7 @@ ZONE_FRACTIONS = {
 ZONE_NAMES = {
     "E": "Easy",
     "M": "Marathon",
+    "H": "Half-marathon goal",
     "T": "Threshold",
     "I": "Interval",
     "R": "Repetition",
@@ -57,8 +58,12 @@ def vdot_for_goal(distance_km: float, time_s: float) -> float:
     return vdot_from_race(distance_km, time_s)
 
 
-def zone_paces(vdot: float) -> dict[str, tuple[float, float]]:
-    """Seconds per km for each zone as (fast, slow)."""
+def zone_paces(vdot: float, half_goal_s: float | None = None) -> dict[str, tuple[float, float]]:
+    """Seconds per km for each zone as (fast, slow).
+
+    H (half-marathon goal pace) comes from the chosen race goal, not from fitness,
+    and is only included when a goal is given.
+    """
     out = {}
     for zone, (lo, hi) in ZONE_FRACTIONS.items():
         fast = 60000 / _velocity_for_vo2(hi * vdot)
@@ -66,8 +71,33 @@ def zone_paces(vdot: float) -> dict[str, tuple[float, float]]:
         out[zone] = (fast, slow)
     mp = predict_time_s(vdot, MARATHON_KM) / MARATHON_KM
     out["M"] = (mp - 5, mp + 5)
-    order = ["E", "M", "T", "I", "R"]
-    return {z: out[z] for z in order}
+    if half_goal_s:
+        hp = half_goal_s / HALF_KM
+        out["H"] = (hp - 5, hp + 5)
+    order = ["E", "M", "H", "T", "I", "R"]
+    return {z: out[z] for z in order if z in out}
+
+
+# Heart-rate zones as fractions of max HR (for runners without a lab test).
+HR_ZONES = [
+    ("Easy / recovery", 0.65, 0.78),
+    ("Steady / marathon", 0.78, 0.87),
+    ("Threshold / half", 0.87, 0.92),
+    ("Interval", 0.92, 1.00),
+]
+
+
+def max_hr_for_age(age: int) -> int:
+    """Tanaka estimate (208 - 0.7 x age); a measured max from Garmin is better."""
+    return round(208 - 0.7 * age)
+
+
+def hr_zones(max_hr: int) -> list[dict]:
+    return [{"name": n, "low": round(lo * max_hr), "high": round(hi * max_hr)} for n, lo, hi in HR_ZONES]
+
+
+def easy_hr_ceiling(max_hr: int) -> int:
+    return round(HR_ZONES[0][2] * max_hr)
 
 
 def fmt_pace(sec_per_km: float) -> str:

@@ -23,7 +23,7 @@ DISTANCE = {"conditionTypeId": 3, "conditionTypeKey": "distance", "displayOrder"
 TIME = {"conditionTypeId": 2, "conditionTypeKey": "time", "displayOrder": 2, "displayable": True}
 ITERATIONS = {"conditionTypeId": 7, "conditionTypeKey": "iterations", "displayOrder": 7, "displayable": False}
 # Warm-up, cool-down and strides are effort-based; no pace alerts on those.
-TARGETED_ZONES = {"E", "M", "T", "I"}
+TARGETED_ZONES = {"E", "M", "H", "T", "I"}
 
 
 class GarminError(RuntimeError):
@@ -80,8 +80,8 @@ def _step(s: dict, order: int, zones: dict) -> tuple[ExecutableStep | RepeatGrou
     ), order + 1
 
 
-def build_workout(w: dict, vdot: float) -> RunningWorkout:
-    zones = paces.zone_paces(vdot)
+def build_workout(w: dict, zones: dict) -> RunningWorkout:
+    """zones: seconds-per-km ranges from paces.zone_paces (including the race goal)."""
     steps, order = [], 1
     for s in w["steps"]:
         built, order = _step(s, order, zones)
@@ -96,14 +96,14 @@ def build_workout(w: dict, vdot: float) -> RunningWorkout:
     )
 
 
-def push(api: Garmin, w: dict, vdot: float) -> str:
+def push(api: Garmin, w: dict, zones: dict) -> str:
     """Upload + schedule a workout, replacing any copy pushed earlier. Returns the Garmin workout id."""
     if w.get("garmin_workout_id"):
         try:
             api.delete_workout(w["garmin_workout_id"])
         except Exception:
             pass  # already deleted in Garmin Connect
-    created = api.upload_running_workout(build_workout(w, vdot))
+    created = api.upload_running_workout(build_workout(w, zones))
     workout_id = str(created["workoutId"])
     api.schedule_workout(workout_id, w["date"])
     return workout_id
