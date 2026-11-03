@@ -16,10 +16,20 @@ SRC="$HOME/marathon-src"
 
 say() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
-say "Updating Termux packages"
-pkg update -y
-pkg upgrade -y
-pkg install -y python git curl termux-tools
+have_tools() {
+  for t in python git curl termux-open-url; do command -v "$t" >/dev/null || return 1; done
+}
+
+# Updates only need GitHub, so skip Termux's package mirrors (often unreachable)
+# once everything is installed. FULL_UPGRADE=1 forces the package upgrade.
+if have_tools && [ -z "${FULL_UPGRADE:-}" ]; then
+  say "Termux packages already installed (run 'pkg upgrade' yourself now and then)"
+else
+  say "Updating Termux packages"
+  pkg update -y
+  pkg upgrade -y
+  pkg install -y python git curl termux-tools
+fi
 
 say "Downloading Marathon Trainer ($BRANCH)"
 if [ -d "$SRC/.git" ]; then
