@@ -10,6 +10,7 @@ ALLOWED_HOSTS (comma-separated, e.g. "127.0.0.1,localhost") rejects requests for
 other Host header, which blocks DNS-rebinding attacks from websites in the browser.
 """
 
+import hashlib
 import hmac
 import os
 from contextlib import asynccontextmanager
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -472,15 +473,33 @@ def restore(data: dict):
 
 # --- static web app ---------------------------------------------------------
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+# "no-cache" makes the browser check with the server (a cheap 304 when unchanged)
+# before reusing a saved copy, so an update shows up the next time the app opens.
+NO_CACHE = {"Cache-Control": "no-cache"}
+VERSIONED = ("app.js", "style.css")
+
+
+class RevalidatedStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers.update(NO_CACHE)
+        return response
+
+
+app.mount("/static", RevalidatedStaticFiles(directory=STATIC), name="static")
 
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    # Version the script and stylesheet by content so a changed file always gets a new URL.
+    html = (STATIC / "index.html").read_text()
+    for name in VERSIONED:
+        version = hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:10]
+        html = html.replace(f"/static/{name}", f"/static/{name}?v={version}")
+    return HTMLResponse(html, headers=NO_CACHE)
 
 
 @app.get("/sw.js")
 def service_worker():
     # Served from the root so its scope covers the whole app.
-    return FileResponse(STATIC / "sw.js", media_type="application/javascript")
+    return FileResponse(STATIC / "sw.js", media_type="application/javascript", headers=NO_CACHE)

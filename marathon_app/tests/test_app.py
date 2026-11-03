@@ -491,3 +491,15 @@ def test_half_race_result_resets_paces(client):
     p = client.get(f"/api/progress?{t}").json()
     assert p["measured_vdot"] > before and p["tests"][-1]["time"] == "2:08:30"
     assert p["half"]["result"] is True
+
+
+def test_app_files_are_revalidated_and_versioned(client):
+    import hashlib
+    from app.main import STATIC
+    r = client.get("/")
+    assert r.headers["cache-control"] == "no-cache"
+    version = hashlib.sha256((STATIC / "app.js").read_bytes()).hexdigest()[:10]
+    assert f'src="/static/app.js?v={version}"' in r.text
+    assert "/static/style.css?v=" in r.text
+    assert client.get(f"/static/app.js?v={version}").headers["cache-control"] == "no-cache"
+    assert client.get("/sw.js").headers["cache-control"] == "no-cache"
