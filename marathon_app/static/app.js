@@ -38,6 +38,16 @@ function toast(msg) {
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+const MONTH = (iso) => new Date(iso + "T12:00:00").toLocaleDateString(undefined, { month: "short" });
+
+function weekRange(days) {
+  const first = days[0].date, last = days[days.length - 1].date;
+  const day = (iso) => new Date(iso + "T12:00:00").getDate();
+  return MONTH(first) === MONTH(last)
+    ? `${MONTH(first)} ${day(first)} – ${day(last)}`
+    : `${MONTH(first)} ${day(first)} – ${MONTH(last)} ${day(last)}`;
+}
+
 function fmtDate(iso, opts = { weekday: "short", day: "numeric", month: "short" }) {
   return new Date(iso + "T12:00:00").toLocaleDateString(undefined, opts);
 }
@@ -210,7 +220,7 @@ async function renderWeek() {
   el.innerHTML = `
     <div class="week-nav">
       <button class="btn" data-nav="-1" ${d.week <= 1 ? "disabled" : ""} aria-label="Previous week">‹</button>
-      <div style="text-align:center"><h2>Week ${d.week}</h2><div class="muted small">${esc(d.phase)}</div></div>
+      <div style="text-align:center"><h2>Week ${d.week} · ${weekRange(d.workouts)}</h2><div class="muted small">${esc(d.phase)}</div></div>
       <button class="btn" data-nav="1" ${d.week >= 26 ? "disabled" : ""} aria-label="Next week">›</button>
     </div>
     <div class="card">
@@ -223,7 +233,7 @@ async function renderWeek() {
         const open = state.openDay === w.date;
         return `
         <div class="day ${w.kind === "rest" ? "rest" : ""} ${w.date === today ? "is-today" : ""}" data-day="${w.date}">
-          <div class="dow"><span>${DOW[i]}</span><b>${new Date(w.date + "T12:00:00").getDate()}</b></div>
+          <div class="dow"><span>${DOW[i]}</span><b>${new Date(w.date + "T12:00:00").getDate()}</b><span class="mon">${MONTH(w.date)}</span></div>
           <div class="info"><div class="t">${esc(w.title)}</div>
             ${w.shoe ? `<div class="muted small">${esc(w.shoe)}</div>` : ""}</div>
           <div class="km">${w.planned_km ? w.planned_km + " km" : ""}</div>
@@ -267,6 +277,17 @@ async function renderWeek() {
 
 /* ---------- Streaks / heatmap ---------- */
 
+// One label per heatmap column: a week belongs to the month of its Thursday, and a
+// column is labelled where that month changes, unless the next change is too close to fit.
+function monthLabels(days) {
+  const weeks = days.length / 7;
+  const labels = Array.from({ length: weeks }, (_, i) => {
+    const month = MONTH(days[i * 7 + 3].date);
+    return i === 0 || month !== MONTH(days[i * 7 - 4].date) ? month : "";
+  });
+  return labels.map((m, i) => (m && labels.slice(i + 1, i + 3).some(Boolean) ? "" : m));
+}
+
 const STATE_LABEL = { done: "Done", partial: "Partial", rest: "Rest day", missed: "Missed", today: "Today — pending", future: "Upcoming" };
 
 async function renderStreaks() {
@@ -282,7 +303,8 @@ async function renderStreaks() {
     </div>
     <div class="card">
       <h3 style="margin-bottom:10px">Training heatmap · 26 weeks</h3>
-      <div class="hm-weeks">${Array.from({ length: 26 }, (_, i) => `<span>${(i + 1) % 4 === 1 ? i + 1 : ""}</span>`).join("")}</div>
+      <div class="hm-weeks hm-months">${monthLabels(d.days).map((m) => `<span>${m}</span>`).join("")}</div>
+      <div class="hm-weeks">${Array.from({ length: 26 }, (_, i) => `<span>${(i + 1) % 4 === 1 ? "W" + (i + 1) : ""}</span>`).join("")}</div>
       <div class="heatmap">
         <div class="hm-days">${DOW.map((n, i) => `<span>${i % 2 === 0 ? n[0] : ""}</span>`).join("")}</div>
         <div class="hm-grid" role="grid" aria-label="Workout completion heatmap">

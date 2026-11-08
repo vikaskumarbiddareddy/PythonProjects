@@ -223,3 +223,6 @@ form.inline { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 8px; ali
 .goal-opt b { font-size: 20px; font-variant-numeric: tabular-nums; }
 .goal-opt .g-label { font-size: 12px; font-weight: 600; opacity: .8; }
 .goal-opt .g-sub { font-size: 12px; font-weight: 500; opacity: .8; font-variant-numeric: tabular-nums; }
+.day .dow span.mon { display: block; font-size: 10px; line-height: 1.1; }
+.hm-weeks span { white-space: nowrap; overflow: visible; }
+.hm-months { font-weight: 600; color: var(--text-2); margin-bottom: 0; }
