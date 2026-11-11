@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, garmin, paces, progress
+from . import db, garmin, moves, paces, progress
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 APP_KEY = os.environ.get("APP_KEY")
@@ -150,6 +150,8 @@ def dashboard(today: str | None = None):
             "week": _week_number(conn, t),
             "days_to_race": (race_day - t).days,
             "next_race": _next_race(workouts, t),
+            "late_run": _late_run(conn),
+            "missed": None if _late_run(conn) else moves.pending_missed(conn, t),
             "workout": _with_paces(today_w, zones, t, easy_hr) if today_w else None,
             "tomorrow": _with_paces(tomorrow_w, zones, t) if tomorrow_w else None,
             "streaks": progress.streaks(workouts, t),
@@ -376,6 +378,29 @@ def garmin_push(body: PushIn, today: str | None = None):
 SYNC_EVERY_S = 10 * 60
 
 
+def _suggest_late_runs(conn, runs: dict, unplanned: list[str]) -> None:
+    """A Garmin run on a rest day right after a missed run: offer to count it as that run."""
+    for day in sorted(unplanned, reverse=True):
+        missed = moves.pending_missed(conn, date.fromisoformat(day))
+        if missed and missed["mode"] == "swap":
+            run = runs[day]
+            db.set_setting(conn, "late_run", {"day": day, "missed": missed["date"], "title": missed["title"],
+                                              "km": run["km"], "time_s": run["time_s"], "avg_hr": run["avg_hr"],
+                                              "ids": run["ids"]})
+            return
+
+
+def _late_run(conn) -> dict | None:
+    s = db.get_setting(conn, "late_run")
+    if not s:
+        return None
+    day, missed = conn.execute("SELECT * FROM workouts WHERE date = ?", (s["day"],)).fetchone(), \
+        conn.execute("SELECT * FROM workouts WHERE date = ?", (s["missed"],)).fetchone()
+    if not day or not missed or day["kind"] != "rest" or day["status"] != "planned" or missed["status"] != "planned":
+        return None  # already handled another way
+    return s
+
+
 @app.post("/api/garmin/sync")
 def garmin_sync(today: str | None = None, force: bool = False):
     """Pull finished runs from Garmin and mark the matching workouts done."""
@@ -397,8 +422,101 @@ def garmin_sync(today: str | None = None, force: bool = False):
             conn.execute(
                 """UPDATE workouts SET status = :status, actual_km = :actual_km, actual_time_s = :actual_time_s,
                    avg_hr = :avg_hr, garmin_activity_id = :garmin_activity_id WHERE date = :date""", u)
+        _suggest_late_runs(conn, runs, unplanned)
         db.set_setting(conn, "last_garmin_sync", now.isoformat())
-    return {"skipped": False, "updated": [u["date"] for u in updates], "unplanned": unplanned}
+        late = _late_run(conn) is not None
+    return {"skipped": False, "updated": [u["date"] for u in updates], "unplanned": unplanned, "late_run": late}
+
+
+# --- moving workouts --------------------------------------------------------
+
+def _garmin_apply(conn, actions: list, today: date) -> str | None:
+    """Mirror a move on the Garmin calendar. Returns a problem to show, or None."""
+    actions = [a for a in actions if a[0] == "delete" or date.fromisoformat(a[1]) >= today]
+    if not actions or not garmin.configured():
+        return None
+    try:
+        api = garmin.login()
+        zones = _zones(conn, _fitness(conn, _all(conn), today)["vdot"])
+        for action, arg in actions:
+            if action == "delete":
+                try:
+                    api.delete_workout(arg)
+                except Exception:
+                    pass  # already gone in Garmin Connect
+            else:
+                w = _get(conn, arg)
+                if w["kind"] != "rest":
+                    conn.execute("UPDATE workouts SET garmin_workout_id = ? WHERE date = ?",
+                                 (garmin.push(api, w, zones), arg))
+    except Exception as e:
+        return f"Moved here, but your watch calendar wasn't updated ({e}). Re-send the week to your watch."
+    return None
+
+
+@app.get("/api/workouts/{day}/move-options")
+def move_options(day: str, today: str | None = None):
+    with db.connect() as conn:
+        try:
+            return {"options": moves.options(conn, day, _today(today))}
+        except moves.MoveError as e:
+            raise HTTPException(400, str(e))
+
+
+class MoveIn(BaseModel):
+    to: str
+    mode: str = Field("swap", pattern="^(swap|replace)$")
+
+
+@app.post("/api/workouts/{day}/move")
+def move_workout(day: str, body: MoveIn, today: str | None = None):
+    t = _today(today)
+    with db.connect() as conn:
+        try:
+            result = moves.move(conn, day, body.to, body.mode, t)
+        except moves.MoveError as e:
+            raise HTTPException(400, str(e))
+        conn.commit()
+        return {"ok": True, "warning": result["warning"], "garmin_error": _garmin_apply(conn, result["garmin"], t)}
+
+
+@app.post("/api/weeks/{week}/undo-moves")
+def undo_moves(week: int, today: str | None = None):
+    t = _today(today)
+    with db.connect() as conn:
+        try:
+            result = moves.undo_week(conn, week)
+        except moves.MoveError as e:
+            raise HTTPException(400, str(e))
+        conn.commit()
+        return {"ok": True, "garmin_error": _garmin_apply(conn, result["garmin"], t)}
+
+
+@app.post("/api/late-run/accept")
+def accept_late_run(today: str | None = None):
+    """Count the Garmin run found on a rest day as the missed workout before it."""
+    t = _today(today)
+    with db.connect() as conn:
+        s = _late_run(conn)
+        if not s:
+            raise HTTPException(400, "Nothing to count")
+        try:
+            moves.move(conn, s["missed"], s["day"], "swap", t, allow_past=True)
+        except moves.MoveError as e:
+            raise HTTPException(400, str(e))
+        conn.execute(
+            """UPDATE workouts SET status = 'done', actual_km = ?, actual_time_s = ?, avg_hr = ?,
+               garmin_activity_id = ? WHERE date = ?""",
+            (s["km"], s["time_s"], s["avg_hr"], ",".join(s["ids"]), s["day"]))
+        db.set_setting(conn, "late_run", None)
+    return {"ok": True}
+
+
+@app.post("/api/late-run/dismiss")
+def dismiss_late_run():
+    with db.connect() as conn:
+        db.set_setting(conn, "late_run", None)
+    return {"ok": True}
 
 
 # --- weight -----------------------------------------------------------------

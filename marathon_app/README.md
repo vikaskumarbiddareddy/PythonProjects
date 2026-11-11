@@ -14,6 +14,21 @@ starting from a 2:20 half marathon, with a half marathon on Sun Dec 6, working t
 - **Weight** – log a weigh-in whenever you like (one per day; a second entry replaces the first) and
   optionally copy it to Garmin Connect.
 
+## Moving workouts
+
+- **Missed a run?** On the rest day after it, Today shows *"You missed Tue's workout - Do it today
+  instead"*: the run and the rest day swap, and the next run stays as planned. A missed Saturday long
+  run can be done on Sunday instead of the recovery run.
+- **↔ Move to another day** on any upcoming or missed workout: pick a day later in the same week.
+  A rest day swaps; a day with a run offers **Replace** (that run is skipped and the week total drops)
+  or **Swap** (the two runs trade days). Races are fixed; logged days and past days can't be used.
+  A warning appears when two hard days end up back to back.
+- **Garmin:** a moved workout that was already sent to the watch is re-sent for its new day, and a
+  replaced one is removed. A run Garmin finds on a rest day right after a missed workout brings up
+  *"Count it as Tue's workout?"*.
+- **↺ Undo this week's moves** on the Week screen restores the original plan until a moved workout is
+  logged. Moved days are never rewritten by later plan updates.
+
 ## Garmin, both ways
 
 - **App → watch:** *Send to watch* uploads the workout with pace targets and schedules it on your
