@@ -503,3 +503,130 @@ def test_app_files_are_revalidated_and_versioned(client):
     assert "/static/style.css?v=" in r.text
     assert client.get(f"/static/app.js?v={version}").headers["cache-control"] == "no-cache"
     assert client.get("/sw.js").headers["cache-control"] == "no-cache"
+
+
+# --- moving workouts --------------------------------------------------------
+# Week 3 (Nov 9-15): Mon rest, Tue cruise intervals, Wed rest, Thu easy 7, Fri rest,
+# Sat long 15 (last 3 @ half pace), Sun recovery 5.
+
+def _week(client, t, n=3):
+    return {w["date"]: w for w in client.get(f"/api/week?week={n}&today={t}").json()["workouts"]}
+
+
+def _move(client, src, dst, mode="swap", t="2026-11-11"):
+    return client.post(f"/api/workouts/{src}/move?today={t}", json={"to": dst, "mode": mode})
+
+
+def test_missed_run_moves_to_rest_day(client):
+    t = "2026-11-11"  # Wed, the day after missing Tuesday's workout
+    d = client.get(f"/api/dashboard?today={t}").json()
+    assert d["missed"] == {"date": "2026-11-10", "title": "Cruise intervals 3 x 1.5 km", "planned_km": 9.0,
+                           "mode": "swap", "today_title": "Rest day"}
+    before = client.get(f"/api/week?week=3&today={t}").json()["planned_km"]
+    r = _move(client, "2026-11-10", t)
+    assert r.status_code == 200 and r.json()["warning"] is None
+    w = _week(client, t)
+    assert w["2026-11-11"]["title"] == "Cruise intervals 3 x 1.5 km" and w["2026-11-11"]["moved_from"] == "2026-11-10"
+    assert w["2026-11-10"]["kind"] == "rest" and w["2026-11-10"]["moved_to"] == "2026-11-11"
+    assert w["2026-11-12"]["title"] == "Easy 7 km + strides"  # the next run is untouched
+    assert client.get(f"/api/week?week=3&today={t}").json()["planned_km"] == before
+    assert client.get(f"/api/dashboard?today={t}").json()["missed"] is None
+    # Yesterday is now a rest day, so it no longer breaks the streak.
+    days = {c["date"]: c["state"] for c in client.get(f"/api/heatmap?today={t}").json()["days"]}
+    assert days["2026-11-10"] == "rest" and days["2026-11-11"] == "today"
+
+
+def test_missed_long_run_replaces_sunday_recovery(client):
+    t = "2026-11-15"
+    assert client.get(f"/api/dashboard?today={t}").json()["missed"]["mode"] == "replace"
+    before = client.get(f"/api/week?week=3&today={t}").json()["planned_km"]
+    assert _move(client, "2026-11-14", t, "replace", t).status_code == 200
+    w = _week(client, t)
+    assert w[t]["title"].startswith("Long run 15 km") and w[t]["replaced"] == "Recovery 5 km"
+    assert w["2026-11-14"]["kind"] == "rest"
+    assert client.get(f"/api/week?week=3&today={t}").json()["planned_km"] == pytest.approx(before - 5)  # total drops
+
+
+def test_swap_two_runs_and_back_to_back_warning(client):
+    t = "2026-11-09"
+    r = _move(client, "2026-11-12", "2026-11-14", "swap", t)  # Thu easy <-> Sat long
+    assert r.status_code == 200
+    w = _week(client, t)
+    assert w["2026-11-12"]["title"].startswith("Long run") and w["2026-11-12"]["moved_from"] == "2026-11-14"
+    assert w["2026-11-14"]["title"] == "Easy 7 km + strides" and w["2026-11-14"]["moved_from"] == "2026-11-12"
+    # The Tue workout moved to Wed now sits right before Thursday's (swapped-in) long run.
+    assert _move(client, "2026-11-10", "2026-11-11", "swap", t).json()["warning"].startswith("Hard days back to back")
+
+
+def test_move_rules(client):
+    t = "2026-11-11"
+    assert _move(client, "2026-11-12", "2026-11-16", t=t).status_code == 400  # next week
+    assert _move(client, "2026-11-12", "2026-11-09", t=t).status_code == 400  # into the past
+    assert _move(client, "2026-11-11", "2026-11-13", t=t).status_code == 400  # rest day as source
+    assert _move(client, "2026-12-06", "2026-12-05", t=t).status_code == 400  # race is fixed
+    assert _move(client, "2026-12-05", "2026-12-06", "replace", t=t).status_code == 400  # can't replace a race
+    client.post(f"/api/workouts/2026-11-12/log?today={t}", json={"status": "done"})
+    assert _move(client, "2026-11-12", "2026-11-13", t=t).status_code == 400  # already logged
+    opts = client.get(f"/api/workouts/2026-11-14/move-options?today={t}").json()["options"]
+    assert [(o["date"], o["modes"]) for o in opts] == [
+        ("2026-11-11", ["swap"]), ("2026-11-13", ["swap"]), ("2026-11-15", ["replace", "swap"])]
+
+
+def test_undo_week_moves(client):
+    t = "2026-11-09"
+    original = _week(client, t)
+    _move(client, "2026-11-14", "2026-11-15", "replace", t)
+    _move(client, "2026-11-10", "2026-11-11", "swap", t)
+    assert client.post(f"/api/weeks/3/undo-moves?today={t}", headers=JSON).status_code == 200
+    after = _week(client, t)
+    keys = ("kind", "title", "planned_km", "moved_from", "moved_to", "replaced", "original")
+    assert all({k: after[d][k] for k in keys} == {k: original[d][k] for k in keys} for d in original)
+    assert client.post(f"/api/weeks/3/undo-moves?today={t}", headers=JSON).status_code == 400  # nothing left
+    _move(client, "2026-11-10", "2026-11-11", "swap", t)
+    client.post(f"/api/workouts/2026-11-11/log?today={t}", json={"status": "done"})
+    assert client.post(f"/api/weeks/3/undo-moves?today={t}", headers=JSON).status_code == 400  # logged
+
+
+def test_no_shortcut_when_next_run_already_came(client):
+    # Tue missed, today is Thu (an easy run day): Tuesday's window has closed.
+    assert client.get("/api/dashboard?today=2026-11-12").json()["missed"] is None
+
+
+def test_garmin_follows_moves(tmp_path, monkeypatch):
+    from app import db, moves
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "g.db")
+    db.init_db()
+    with db.connect() as conn:
+        conn.execute("UPDATE workouts SET garmin_workout_id = 'w14' WHERE date = '2026-11-14'")
+        conn.execute("UPDATE workouts SET garmin_workout_id = 'w15' WHERE date = '2026-11-15'")
+        r = moves.move(conn, "2026-11-14", "2026-11-15", "replace", date(2026, 11, 9))
+        assert r["garmin"] == [("push", "2026-11-15"), ("delete", "w15")]
+        row = conn.execute("SELECT garmin_workout_id FROM workouts WHERE date = '2026-11-15'").fetchone()
+        assert row["garmin_workout_id"] == "w14"  # travels with the workout, re-sent for the new date
+
+
+def test_late_garmin_run_counts_as_missed_workout(client, monkeypatch):
+    from app import garmin
+    monkeypatch.setattr(garmin, "login", lambda: object())
+    monkeypatch.setattr(garmin, "fetch_runs", lambda api, s, e: {
+        "2026-11-11": {"km": 9.1, "time_s": 3300, "ids": ["77"], "avg_hr": 150}})
+    t = "2026-11-11"
+    assert client.post(f"/api/garmin/sync?today={t}", headers=JSON).json()["late_run"] is True
+    d = client.get(f"/api/dashboard?today={t}").json()
+    assert d["late_run"]["missed"] == "2026-11-10" and d["missed"] is None
+    assert client.post(f"/api/late-run/accept?today={t}", headers=JSON).status_code == 200
+    w = _week(client, t)
+    assert w[t]["title"] == "Cruise intervals 3 x 1.5 km" and w[t]["status"] == "done" and w[t]["actual_km"] == 9.1
+    assert w["2026-11-10"]["kind"] == "rest"
+    assert client.get(f"/api/dashboard?today={t}").json()["late_run"] is None
+
+
+def test_plan_revisions_leave_moved_days_alone(tmp_path, monkeypatch):
+    from app import db, moves
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "r.db")
+    db.init_db()
+    with db.connect() as conn:
+        moves.move(conn, "2026-11-14", "2026-11-15", "replace", date(2026, 11, 9))
+        conn.execute("DELETE FROM settings WHERE key = 'plan_revision'")
+        db._apply_revisions(conn, today=date(2026, 11, 9))
+        assert conn.execute("SELECT kind FROM workouts WHERE date = '2026-11-14'").fetchone()["kind"] == "rest"

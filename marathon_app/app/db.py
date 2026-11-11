@@ -48,7 +48,11 @@ CREATE TABLE IF NOT EXISTS workouts (
     comment TEXT,
     garmin_workout_id TEXT,
     garmin_activity_id TEXT,  -- set when the run was synced from a Garmin activity
-    avg_hr INTEGER
+    avg_hr INTEGER,
+    moved_from TEXT,  -- date this workout was originally planned on (see moves.py)
+    moved_to TEXT,    -- on a day emptied by a move: where its workout went
+    replaced TEXT,    -- title of the run this workout replaced
+    original TEXT     -- JSON of the day's planned content before any move, for undo
 );
 CREATE TABLE IF NOT EXISTS fitness (
     id INTEGER PRIMARY KEY,
@@ -115,7 +119,8 @@ def init_db() -> None:
 def _migrate(conn) -> None:
     """Add columns introduced after a database was first created."""
     have = {r["name"] for r in conn.execute("PRAGMA table_info(workouts)")}
-    for col, decl in (("garmin_activity_id", "TEXT"), ("avg_hr", "INTEGER")):
+    for col, decl in (("garmin_activity_id", "TEXT"), ("avg_hr", "INTEGER"), ("moved_from", "TEXT"),
+                      ("moved_to", "TEXT"), ("replaced", "TEXT"), ("original", "TEXT")):
         if col not in have:
             conn.execute(f"ALTER TABLE workouts ADD COLUMN {col} {decl}")
 
@@ -123,8 +128,8 @@ def _migrate(conn) -> None:
 def _apply_revisions(conn, today: date | None = None) -> None:
     """Bring a database created by an older version up to the current plan.
 
-    Only future days that are still unlogged are rewritten; anything already
-    done, skipped, partial or synced from Garmin is left exactly as it was.
+    Only future days that are still unlogged and not moved are rewritten; anything
+    already done, skipped, partial, synced from Garmin or moved is left as it was.
     """
     revision = get_setting(conn, "plan_revision") or 1
     if revision >= PLAN_REVISION:
@@ -145,7 +150,8 @@ def _apply_revisions(conn, today: date | None = None) -> None:
         conn.execute(
             """UPDATE workouts SET week = ?, phase = ?, kind = ?, title = ?, steps = ?, shoe = ?, planned_km = ?,
                    notes = ?, test_distance_km = ?
-               WHERE date = ? AND status = 'planned' AND actual_km IS NULL AND garmin_activity_id IS NULL""",
+               WHERE date = ? AND status = 'planned' AND actual_km IS NULL AND garmin_activity_id IS NULL
+                 AND original IS NULL""",
             (w.week, w.phase, w.kind, w.title, json.dumps(w.steps), w.shoe, w.planned_km, w.notes,
              w.test_distance_km, w.date.isoformat()),
         )

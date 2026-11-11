@@ -28,16 +28,17 @@ async function api(path, opts = {}) {
   return data;
 }
 
-function toast(msg) {
+function toast(msg, ms = 2800) {
   const t = $("#toast");
   t.textContent = msg;
   t.classList.add("show");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.classList.remove("show"), 2800);
+  toast.timer = setTimeout(() => t.classList.remove("show"), ms);
 }
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+const shortDay = (iso) => `${DOW[(new Date(iso + "T12:00:00").getDay() + 6) % 7]} ${new Date(iso + "T12:00:00").getDate()}`;
 const MONTH = (iso) => new Date(iso + "T12:00:00").toLocaleDateString(undefined, { month: "short" });
 
 function weekRange(days) {
@@ -116,6 +117,7 @@ function workoutCard(w, { hero = false, garmin = false } = {}) {
       <div class="big-km">${w.planned_km}<small> km</small></div>
       ${shoeChip(w.shoe)}
     </div>
+    ${w.moved_from ? `<p class="moved">↔ Moved from ${fmtDate(w.moved_from)}${w.replaced ? ` · replaces ${esc(w.replaced)}` : ""}</p>` : ""}
     ${w.notes ? `<p class="muted small">${esc(w.notes)}</p>` : ""}
     ${w.hr_hint ? `<p class="small muted">♥ ${esc(w.hr_hint)}</p>` : ""}
     ${actualLine(w)}
@@ -139,6 +141,9 @@ function workoutCard(w, { hero = false, garmin = false } = {}) {
     </details>
     ${garmin && w.state !== "missed" && !["done", "partial"].includes(w.status) ? `
       <button class="btn block" data-act="garmin">${w.garmin_workout_id ? "↻ Re-send to watch" : "⌚ Send to watch"}</button>` : ""}
+    ${w.kind !== "race" && w.status === "planned" && w.actual_km == null ? `
+      <button class="btn block" data-act="move">↔ Move to another day</button>
+      <div class="move-panel" hidden></div>` : ""}
   </div>`;
 }
 
@@ -151,7 +156,16 @@ function bindWorkoutCard(root, onChange) {
       e.preventDefault();
       const act = btn.dataset.act;
       try {
-        if (act === "garmin") {
+        if (act === "move") {
+          await showMoveOptions(card, day);
+          return;
+        } else if (act === "move-to") {
+          const r = await api(`/api/workouts/${day}/move`, { method: "POST",
+            body: JSON.stringify({ to: btn.dataset.to, mode: btn.dataset.mode }) });
+          const msg = [`Moved to ${fmtDate(btn.dataset.to)}`, r.warning, r.garmin_error].filter(Boolean).join(". ");
+          toast(msg, r.warning || r.garmin_error ? 7000 : 2800);
+          state.openDay = btn.dataset.to;
+        } else if (act === "garmin") {
           btn.disabled = true;
           btn.textContent = "Sending…";
           await api("/api/garmin/push", { method: "POST", body: JSON.stringify({ date: day }) });
@@ -178,6 +192,66 @@ function bindWorkoutCard(root, onChange) {
   });
 }
 
+async function showMoveOptions(card, day) {
+  const panel = card.querySelector(".move-panel");
+  if (!panel.hidden) { panel.hidden = true; return; }
+  const { options } = await api(`/api/workouts/${day}/move-options`);
+  panel.innerHTML = !options.length
+    ? `<p class="muted small">No free day left in this week.</p>`
+    : `<p class="small muted">Move within this week to:</p>` + options.map((o) => `
+      <div class="move-opt">
+        <div><b>${fmtDate(o.date)}</b><div class="muted small">${o.kind === "rest" ? "Rest day" : esc(o.title)}</div></div>
+        <div class="row" style="gap:6px">
+          ${o.kind === "rest"
+            ? `<button class="btn primary" data-act="move-to" data-to="${o.date}" data-mode="swap">Move here</button>`
+            : `<button class="btn" data-act="move-to" data-to="${o.date}" data-mode="replace" title="Skip ${esc(o.title)}">Replace</button>
+               <button class="btn" data-act="move-to" data-to="${o.date}" data-mode="swap">Swap</button>`}
+        </div>
+      </div>`).join("") +
+      (options.some((o) => o.kind !== "rest")
+        ? `<p class="small muted">Replace: that day's run is skipped and the week total drops. Swap: the two runs trade days.</p>` : "");
+  panel.hidden = false;
+}
+
+function todayBanners(d) {
+  if (d.late_run) {
+    const l = d.late_run;
+    return `<div class="card banner">
+      <p>⌚ Garmin found a <b>${l.km} km</b> run on ${fmtDate(l.day)}, a rest day.
+        Count it as <b>${fmtDate(l.missed)}'s ${esc(l.title)}</b>?</p>
+      <div class="row" style="gap:8px"><button class="btn primary" data-banner="late-accept">Yes, count it</button>
+        <button class="btn" data-banner="late-dismiss">No</button></div></div>`;
+  }
+  if (d.missed) {
+    const m = d.missed;
+    return `<div class="card banner">
+      <p>⚠️ You missed <b>${fmtDate(m.date)}'s ${esc(m.title)}</b>${m.planned_km ? ` (${m.planned_km} km)` : ""}.</p>
+      ${m.mode === "replace" ? `<p class="small muted">Today's ${esc(m.today_title)} will be skipped.</p>` : ""}
+      <button class="btn primary" data-banner="do-missed" data-from="${m.date}" data-mode="${m.mode}">
+        Do it today instead${m.mode === "replace" ? ` of ${esc(m.today_title)}` : ""}</button></div>`;
+  }
+  return "";
+}
+
+function bindBanners(el, today) {
+  el.querySelectorAll("[data-banner]").forEach((b) => b.addEventListener("click", async () => {
+    try {
+      if (b.dataset.banner === "late-accept") {
+        await api("/api/late-run/accept", { method: "POST" });
+        toast("Counted. Nice work! 🔥");
+      } else if (b.dataset.banner === "late-dismiss") {
+        await api("/api/late-run/dismiss", { method: "POST" });
+      } else {
+        const r = await api(`/api/workouts/${b.dataset.from}/move`, { method: "POST",
+          body: JSON.stringify({ to: today, mode: b.dataset.mode }) });
+        const msg = ["Moved to today", r.warning, r.garmin_error].filter(Boolean).join(". ");
+        toast(msg, r.warning || r.garmin_error ? 7000 : 2800);
+      }
+      refresh();
+    } catch (err) { toast(err.message); }
+  }));
+}
+
 /* ---------- Today ---------- */
 
 async function renderToday() {
@@ -194,6 +268,7 @@ async function renderToday() {
     return;
   }
   el.innerHTML = `
+    ${todayBanners(d)}
     ${workoutCard(d.workout, { hero: true, garmin: d.garmin_configured })}
     ${d.tomorrow ? `<div class="card"><div class="eyebrow">Tomorrow</div>
       <div class="row between" style="margin-top:4px"><h3>${esc(d.tomorrow.title)}</h3>
@@ -203,6 +278,7 @@ async function renderToday() {
       <div class="stat"><div class="v">${d.streaks.runs_done}/${d.streaks.runs_due}</div><div class="l">Runs completed</div></div>
       <div class="stat"><div class="v">${d.predicted_marathon}</div><div class="l">Predicted marathon</div></div>
     </div>`;
+  bindBanners(el, d.today);
   bindWorkoutCard(el, refresh);
 }
 
@@ -235,13 +311,16 @@ async function renderWeek() {
         <div class="day ${w.kind === "rest" ? "rest" : ""} ${w.date === today ? "is-today" : ""}" data-day="${w.date}">
           <div class="dow"><span>${DOW[i]}</span><b>${new Date(w.date + "T12:00:00").getDate()}</b><span class="mon">${MONTH(w.date)}</span></div>
           <div class="info"><div class="t">${esc(w.title)}</div>
-            ${w.shoe ? `<div class="muted small">${esc(w.shoe)}</div>` : ""}</div>
+            ${w.shoe ? `<div class="muted small">${esc(w.shoe)}</div>` : ""}
+            ${w.moved_to ? `<div class="moved small">→ moved to ${shortDay(w.moved_to)}</div>` : ""}
+            ${w.moved_from ? `<div class="moved small">↔ from ${shortDay(w.moved_from)}${w.replaced ? ` · replaces ${esc(w.replaced)}` : ""}</div>` : ""}</div>
           <div class="km">${w.planned_km ? w.planned_km + " km" : ""}</div>
           <div class="state-icon ${w.state}">${icon}</div>
         </div>
         ${open && w.kind !== "rest" ? `<div class="day-detail">${workoutCard(w, { garmin: dash.garmin_configured })}</div>` : ""}`;
       }).join("")}
     </div>
+    ${d.workouts.some((w) => w.original) ? `<button class="btn block" id="undoMoves">↺ Undo this week's moves</button>` : ""}
     ${dash.garmin_configured ? `
       <button class="btn primary block" id="pushWeek">⌚ Send this week to watch</button>
       <button class="btn block" id="syncGarmin">↻ Get finished runs from Garmin</button>` : ""}`;
@@ -255,6 +334,16 @@ async function renderWeek() {
     state.openDay = state.openDay === row.dataset.day ? null : row.dataset.day;
     renderWeek().catch((e) => toast(e.message));
   }));
+  const um = $("#undoMoves", el);
+  if (um) um.addEventListener("click", async () => {
+    if (!confirm("Put this week's workouts back on their original days?")) return;
+    try {
+      const r = await api(`/api/weeks/${d.week}/undo-moves`, { method: "POST" });
+      toast(r.garmin_error || "Week restored", r.garmin_error ? 7000 : 2800);
+      state.openDay = null;
+      refresh();
+    } catch (err) { toast(err.message); }
+  });
   const pw = $("#pushWeek", el);
   if (pw) pw.addEventListener("click", async () => {
     pw.disabled = true;
